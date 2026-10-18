@@ -22,35 +22,33 @@ answers, path-based ACLs) showed what klausur was missing. The suite lives in
 | No way to write files, e.g. into a folder the service watches | `write_file`, `remove_file`, `file_exists` |
 | Only requests could register cleanup | `undo(\|\| …)` puts a closure on the same undo stack |
 | `sleep` ignored Ctrl-C and the test's `timeout` | It wakes up for both |
+| Map-valued case arguments made labels unreadable (`acl={"uri":[{"allow":…`) | The `label(expr)` test modifier; maps and lists shrink to `{…}`/`[…]` otherwise; `--case` matches labels |
 | The request timeout was a fixed 30 s, and a timed-out request left server state behind without an undo | `--timeout SECS`, the per-request `timeout("90s")` modifier, and timed-out requests register their undo |
 
 ## Still open
 
 Roughly by how much they'd help:
 
-1. **Readable case labels.** Map-valued parameters show as truncated JSON
-   (`acl={"uri":[{"allow":…`). Allow a label, e.g. a `name` field in `cases` rows or a
-   `label(...)` modifier.
-2. **The HTTP method can't be templated.** POST and PUT variants of the same endpoint need two
+1. **The HTTP method can't be templated.** POST and PUT variants of the same endpoint need two
    request blocks (`indexFile` / `updateFile`).
-3. **XML / HTML traversal.** Not needed for this JSON API, but a service returning XML, or a test
+2. **XML / HTML traversal.** Not needed for this JSON API, but a service returning XML, or a test
    wanting to read a fixture page's text, has nothing to query with. Candidates: `xml_parse`
    into maps, or CSS selectors over HTML (`html_select(text, "main p")`).
-4. **Deep JSON queries.** Closures work (`body.chatResponse.documents.map(|d| d.url)`), but
+3. **Deep JSON queries.** Closures work (`body.chatResponse.documents.map(|d| d.url)`), but
    "every `url` anywhere" needs a recursive helper. A small JSONPath (`json_path(body, "$..url")`)
    would read better.
-5. **`print` shows Rhai syntax** (`#{"a": 1}`), while `log` shows JSON. They should match.
-6. **Rhai quirks that bit while writing tests:**
+4. **`print` shows Rhai syntax** (`#{"a": 1}`), while `log` shows JSON. They should match.
+5. **Rhai quirks that bit while writing tests:**
    - `trim()`, `make_lower()` and `sort()` mutate in place and return `()`
    - `call` is a reserved word
    - `try` is only a statement
 
    Worth documenting, or wrapping with value-returning helpers (`lower(s)`, `trimmed(s)`).
-7. **Parallelism.** The suite takes ~2 min, almost all of it waiting on the LLM and on the
+6. **Parallelism.** The suite takes ~2 min, almost all of it waiting on the LLM and on the
    service's rate limiter. Running independent tests concurrently would cut that down, given a
    per-suite concurrency limit so the limiter isn't hit harder. Most of the file watcher
    tests' time is the worker's 5 s schedule.
-8. **Streaming assertions.** SSE bodies are read completely before parsing, so time to first
+7. **Streaming assertions.** SSE bodies are read completely before parsing, so time to first
    event can't be measured or asserted.
-9. **Waiting for absence.** `poll` waits until something holds. "This file is never indexed"
+8. **Waiting for absence.** `poll` waits until something holds. "This file is never indexed"
    can't be awaited; the watcher tests drop a second file and wait for that one instead.

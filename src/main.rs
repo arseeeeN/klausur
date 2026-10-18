@@ -59,8 +59,9 @@ enum Command {
         /// Seed for generated values; failures print the seed that reproduces them.
         #[arg(long)]
         seed: Option<u64>,
-        /// Only run cases whose argument `NAME` displays as `VALUE`.
-        #[arg(long = "case", value_name = "NAME=VALUE")]
+        /// Only run cases whose argument `NAME` displays as `VALUE`, or whose `label(...)` is
+        /// exactly `LABEL`.
+        #[arg(long = "case", value_name = "NAME=VALUE|LABEL")]
         cases: Vec<String>,
         /// Only run tests with this tag.
         #[arg(long = "tag")]
@@ -420,13 +421,17 @@ fn test(
     } else {
         paths.into_iter().map(PathBuf::from).collect()
     };
-    let mut case_filters = Vec::new();
-    for raw in &raw_cases {
-        match parse_kv(raw) {
-            Ok(kv) => case_filters.push(kv),
-            Err(code) => return code,
-        }
-    }
+    // `--case NAME=VALUE` matches an argument; any `--case` also matches a `label(...)` exactly.
+    let case_filters: Vec<(String, Option<(String, String)>)> = raw_cases
+        .iter()
+        .map(|raw| {
+            (
+                raw.clone(),
+                raw.split_once('=')
+                    .map(|(k, v)| (k.trim().to_string(), v.to_string())),
+            )
+        })
+        .collect();
     let seed = seed.unwrap_or_else(seed_now);
     let config = Config {
         trace: verbose,
@@ -505,10 +510,13 @@ fn test(
         let total = cases.len();
         let mut ran = 0;
         for case in cases {
-            let matches = case_filters.iter().all(|(k, v)| {
-                case.args
-                    .iter()
-                    .any(|(name, val)| name == k && value::display_plain(val) == *v)
+            let matches = case_filters.iter().all(|(raw, kv)| {
+                case.label.as_deref() == Some(raw.as_str())
+                    || kv.as_ref().is_some_and(|(k, v)| {
+                        case.args
+                            .iter()
+                            .any(|(name, val)| name == k && value::display_plain(val) == *v)
+                    })
             });
             if !matches {
                 continue;

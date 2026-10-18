@@ -324,6 +324,7 @@ impl<'a> Reporter<'a> {
             file,
             CaseResult {
                 test: name.to_string(),
+                label: None,
                 args: Vec::new(),
                 outcome: Err(failure),
                 dirty: Vec::new(),
@@ -339,6 +340,9 @@ impl<'a> Reporter<'a> {
             println!("\n{}", bold("Failures"));
             for r in &self.failures {
                 println!("\n{} {}", red("──"), bold(r.label()));
+                if let Some(args) = r.args_line() {
+                    println!("  {} {}", dim("args:"), dim(args));
+                }
                 if let Err(f) = &r.outcome {
                     print!("{}", render_failure(f, self.sources));
                 }

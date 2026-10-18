@@ -23,6 +23,7 @@ pub const BUILTIN_MODIFIERS: &[&str] = &[
     "tags",
     "skip",
     "only",
+    "label",
     "before",
     "after",
     "around",
@@ -46,6 +47,8 @@ pub struct TestRt {
     pub cases: Option<usize>,
     /// The generated modifier script.
     pub modifiers: Option<usize>,
+    /// `label(...)`: an expression evaluated per case with its arguments in scope.
+    pub label: Option<usize>,
     pub body: usize,
 }
 
@@ -246,6 +249,7 @@ pub struct CaseRun {
 
 pub struct CaseResult {
     pub test: String,
+    pub label: Option<String>,
     pub args: Vec<(String, String)>,
     pub outcome: Outcome,
     pub dirty: Vec<DirtyEntry>,
@@ -255,16 +259,41 @@ pub struct CaseResult {
 }
 
 impl CaseResult {
+    /// `test [label]`, or `test [a=1, b={…}]` without a `label` modifier.
     pub fn label(&self) -> String {
+        if let Some(label) = &self.label {
+            return format!("{} [{label}]", self.test);
+        }
         if self.args.is_empty() {
             return self.test.clone();
         }
         let args: Vec<String> = self
             .args
             .iter()
-            .map(|(k, v)| format!("{k}={}", value::truncate(v, 40)))
+            .map(|(k, v)| format!("{k}={}", short_value(v)))
             .collect();
         format!("{} [{}]", self.test, args.join(", "))
+    }
+
+    /// The arguments in full, shown with failures when the label hides them.
+    pub fn args_line(&self) -> Option<String> {
+        let hidden = self.label.is_some() || self.args.iter().any(|(_, v)| short_value(v) != *v);
+        (hidden && !self.args.is_empty()).then(|| {
+            self.args
+                .iter()
+                .map(|(k, v)| format!("{k}={}", value::truncate(v, 300)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+    }
+}
+
+/// Maps and lists shrink to `{…}` / `[…]` in labels; other values are cut at 40 characters.
+fn short_value(v: &str) -> String {
+    match v.as_bytes().first() {
+        Some(b'{') if v != "{}" => "{…}".into(),
+        Some(b'[') if v != "[]" => "[…]".into(),
+        _ => value::truncate(v, 40),
     }
 }
 
@@ -420,6 +449,7 @@ fn interpret_around(run: &CaseRun, ret: Dynamic, before: usize) -> Outcome {
 
 pub struct CaseSpec {
     pub args: Vec<(String, Dynamic)>,
+    pub label: Option<String>,
     pub seed: u64,
     pub generated: bool,
 }
@@ -554,8 +584,22 @@ pub fn expand_cases(
                 };
                 args.push((p.name.clone(), v));
             }
+            let label = match test.label {
+                Some(unit) => {
+                    let mut scope = Scope::new();
+                    for (k, v) in &args {
+                        scope.push_dynamic(k.clone(), v.clone());
+                    }
+                    let v = shared
+                        .eval(engine, unit, &mut scope)
+                        .map_err(|e| shared.to_failure(&e, Some(unit)))?;
+                    Some(value::display_plain(&v))
+                }
+                None => None,
+            };
             cases.push(CaseSpec {
                 args,
+                label,
                 seed,
                 generated,
             });
@@ -677,6 +721,7 @@ pub fn run_case(
     let logs = std::mem::take(&mut ctx.0.borrow_mut().logs);
     CaseResult {
         test: test.name.clone(),
+        label: spec.label,
         args: spec
             .args
             .iter()

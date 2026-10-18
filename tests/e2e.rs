@@ -466,6 +466,80 @@ test "skipped" skip("later") { fail("no") }
 }
 
 #[test]
+fn case_labels() {
+    let server = start();
+    let p = project(
+        "labels",
+        r#"
+test "rules" (name, acl, ok) cases [
+    #{ name: "allow all", acl: #{ website: [#{ path: "/", allow: true }] }, ok: true },
+    #{ name: "deny all", acl: #{ website: [#{ path: "/", allow: false }] }, ok: false },
+] label(name) {
+    expect name.len() > 0
+    expect acl.website[0].allow == ok
+    expect name != "deny all"
+}
+
+test "matrix" (endpoint in ["stats", "health"], role in ["admin"]) label(`${role} on ${endpoint}`) {
+    expect role == "admin"
+}
+
+test "unlabelled" (acl, n) cases [#{ acl: #{ a: [1, 2] }, n: 1 }, #{ acl: #{}, n: 2 }] {
+    expect n > 0
+}
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ rules [allow all]",
+        "✗ rules [deny all]",
+        r#"args: name="deny all", acl={"website":[{"allow":false,"path":"/"}]}, ok=false"#,
+        "✓ matrix [admin on stats]",
+        "✓ matrix [admin on health]",
+        "✓ unlabelled [acl={…}, n=1]",
+        "✓ unlabelled [acl={}, n=2]",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+
+    let out = p.run(&server, &["test", "--case", "admin on health"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("1 passed"), "{}", out.all());
+    let out = p.run(&server, &["test", "rules", "--case", "ok=true"]);
+    assert!(
+        out.stdout.contains("✓ rules [allow all]") && out.stdout.contains("1 passed"),
+        "{}",
+        out.all()
+    );
+
+    p.file(
+        "t.test.kl",
+        r#"
+test "twice" (n in [1]) label(n) label(n) { }
+test "empty" (n in [1]) label() { }
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 2, "{}", out.all());
+    assert!(
+        out.stderr.contains("`label` is given twice"),
+        "{}",
+        out.all()
+    );
+    assert!(
+        out.stderr.contains("`label` needs an expression"),
+        "{}",
+        out.all()
+    );
+
+    p.file("t.test.kl", "test \"bad\" (n in [1]) label(missing) { }\n");
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    assert!(out.stdout.contains("missing"), "{}", out.all());
+}
+
+#[test]
 fn only_and_timeout() {
     let server = start();
     let p = project(

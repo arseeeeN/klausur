@@ -840,8 +840,8 @@ impl Compiler<'_> {
             })
             .collect();
         let cases = t.cases.and_then(|s| self.expr_unit(engine, file, s));
-        let modifiers = if t.modifiers.is_empty() {
-            None
+        let (modifiers, label) = if t.modifiers.is_empty() {
+            (None, None)
         } else {
             self.modifier_unit(engine, file, t, fns)
         };
@@ -858,20 +858,26 @@ impl Compiler<'_> {
             params,
             cases,
             modifiers,
+            label,
             body: body_unit?,
         })
     }
 
     /// `rollback runs(200) as_user("admin")` → `t.__layer(0); t.rollback(); t.__layer(1); …`
+    ///
+    /// `label(...)` isn't part of the script: its argument is compiled on its own and evaluated
+    /// per case, with the case's arguments in scope. Returns (script, label).
     fn modifier_unit(
         &mut self,
         engine: &Engine,
         file: FileId,
         t: &syntax::TestDecl,
         fns: &HashMap<String, FnDecl>,
-    ) -> Option<usize> {
+    ) -> (Option<usize>, Option<usize>) {
         let src = self.src(file).to_string();
         let mut code = CodeBuilder::new(t.name_span);
+        let mut label = None;
+        let mut has_script = false;
         for (i, m) in t.modifiers.iter().enumerate() {
             let Some((ns, ne)) = ident_at(&src, m.start) else {
                 self.diags.push(Diag::at(*m, "expected a modifier name"));
@@ -879,6 +885,25 @@ impl Compiler<'_> {
             };
             let name = &src[ns..ne];
             let name_span = Span::new(file, ns, ne);
+            if name == "label" {
+                if label.is_some() {
+                    self.diags.push(Diag::at(*m, "`label` is given twice"));
+                    continue;
+                }
+                let usage = "`label` needs an expression, e.g. `label(name)` or ``label(`${role} on ${endpoint}`)``";
+                if src.as_bytes().get(ne) != Some(&b'(') || m.end < ne + 2 {
+                    self.diags.push(Diag::at(*m, usage));
+                    continue;
+                }
+                let (s, e) = crate::syntax::scan::trim_range(&src, ne + 1, m.end - 1);
+                if s == e {
+                    self.diags.push(Diag::at(*m, usage));
+                    continue;
+                }
+                label = self.expr_unit(engine, file, Span::new(file, s, e));
+                continue;
+            }
+            has_script = true;
             let user_fn = fns.get(name);
             if user_fn.is_none() && !BUILTIN_MODIFIERS.contains(&name) {
                 let candidates = BUILTIN_MODIFIERS
@@ -888,7 +913,7 @@ impl Compiler<'_> {
                 let mut d = Diag::at(name_span, format!("unknown modifier `{name}`"));
                 d = match suggest(name, candidates) {
                     Some(s) => d.help(format!("did you mean `{s}`?")),
-                    None => d.help("modifiers are built-ins (rollback, timeout, retries, runs, seed, tags, skip, only) or functions you define"),
+                    None => d.help("modifiers are built-ins (rollback, timeout, retries, runs, seed, tags, skip, only, label) or functions you define"),
                 };
                 self.diags.push(d);
                 continue;
@@ -909,7 +934,12 @@ impl Compiler<'_> {
             }
             code.push_gen(";\n");
         }
-        self.compile(engine, file, code)
+        let script = if has_script {
+            self.compile(engine, file, code)
+        } else {
+            None
+        };
+        (script, label)
     }
 
     /// Resolve named arguments of a user modifier call statically: `(role: "x")` → `("x")`.

@@ -342,9 +342,27 @@ derived from the run seed, the file, the test name and the case's index. So
 out, and the failure report prints the exact rerun command. Shrinking failing inputs is
 *(post-v1)*.
 
-### 6.3 Pinning cases from the CLI
+### 6.3 Case labels
 
-`klausur test "login" --case user=alice` runs only the matching cases.
+The report names each case after its arguments: `rules [role="admin", n=3]`. Maps and lists
+shrink to `{…}` and `[…]`. The `label` modifier names the case instead. Its argument is an
+expression evaluated per case, with the case's arguments in scope:
+
+```
+test "read rules" (name, acl, visible) cases [
+    #{ name: "deny subtree", acl: #{…}, visible: false },
+] label(name) { … }
+
+test "role matrix" (endpoint in ["stats", "health"], role in ["none", "admin"]) label(`${role} → ${endpoint}`) { … }
+```
+
+No key is reserved: `name` above is an ordinary parameter. A failing case lists its full
+arguments under the label.
+
+### 6.4 Pinning cases from the CLI
+
+`klausur test "login" --case user=alice` runs only the matching cases. `--case "deny subtree"`
+matches a label exactly.
 
 ---
 
@@ -415,6 +433,7 @@ These are implemented in Rust on top of the same API:
 - `tags(…)`
 - `skip("reason")`
 - `only`
+- `label(expr)`: names each case in the report (§6.3)
 
 ### 7.3 Modifiers on requests and functions
 
@@ -627,7 +646,7 @@ should grow beyond dotenv, e.g. with per-environment base URLs.)*
 
 ```
 klausur run  <file>[#name] [-a k=v ...] [--env NAME] [--timeout SECS] [-q]
-klausur test [paths/filters] [--seed N] [--case k=v] [--tag T] [--on-dirty=abort|continue] [--env NAME] [--timeout SECS] [-v]
+klausur test [paths/filters] [--seed N] [--case k=v|label] [--tag T] [--on-dirty=abort|continue] [--env NAME] [--timeout SECS] [-v]
 klausur list [paths]
 klausur recover [--all | --discard <run-id>]   # post-v1
 klausur fmt  [paths]                           # post-v1
