@@ -19,7 +19,7 @@ pub struct File {
 pub enum Item {
     Let(LetDecl),
     Fn(FnDecl),
-    Request(RequestDecl),
+    Request(Box<RequestDecl>),
     Test(TestDecl),
     Import(ImportDecl),
 }
@@ -70,7 +70,10 @@ pub struct RequestBody {
 
 #[derive(Debug, Clone)]
 pub struct Connection {
+    /// The method as written: `POST`, or `{{method}}` when templated.
     pub verb: String,
+    /// `{{expr}}` in place of the method, rendered per call.
+    pub verb_template: Option<Template>,
     pub url: Template,
     pub headers: Vec<Header>,
     pub span: Span,

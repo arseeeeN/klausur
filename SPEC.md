@@ -131,6 +131,28 @@ The first line of `connection` selects the protocol by its verb:
 
 The lines after the protocol line are headers, `Name: value`, with interpolation.
 
+The HTTP method can be a variable, written as one interpolation in place of the verb:
+
+```
+@indexFile(jwt, url, file, method = "POST") {
+    connection {
+        {{method}} {{base}}/api/indexing/file
+        Authorization: Bearer {{jwt}}
+    }
+    send = multipart(#{ url: url, file: file })
+    expect body.status == if method == "PUT" { "updated" } else { "indexed" }
+}
+```
+
+- The interpolation must be the whole first word: `P{{x}}T` is a load error.
+- The value is checked on every call. It must be a string of HTTP token characters, so
+  custom methods such as `PURGE` work, and `()` or `"P T"` fail the call.
+- It is sent as given. Methods are case-sensitive, so `"put"` isn't uppercased. If an
+  expectation fails after a lowercase standard method was sent, the failure says so.
+- Literal methods are still checked when the file loads.
+- `undo` doesn't know which method was sent. Branch on the parameter if that matters:
+  `undo { if method == "POST" { deleteByUrl(jwt, url) } }`.
+
 ### 4.3 `send` and interpolation
 
 - `send { … }` / `send [ … ]`: a **JSON body**. Inside it, `{{expr}}` inserts the

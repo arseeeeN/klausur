@@ -540,6 +540,69 @@ test "empty" (n in [1]) label() { }
 }
 
 #[test]
+fn templated_methods() {
+    let server = start();
+    let p = project(
+        "methods",
+        r#"
+@echoAs(method = "POST") {
+    connection { {{method}} {{base}}/echo/m }
+    expect status == 200
+}
+@strict(method) {
+    connection { {{method}} {{base}}/echo/m }
+    expect body.method == "PUT"
+}
+
+test "default" { expect echoAs().body.method == "POST" }
+test "override" { expect echoAs(method: "PUT").body.method == "PUT" }
+test "expression" { let update = true; expect echoAs(if update { "PATCH" } else { "POST" }).body.method == "PATCH" }
+test "custom" { expect echoAs("PURGE").body.method == "PURGE" }
+test "null" { echoAs(()) }
+test "invalid" { echoAs("P T") }
+test "lowercase" { strict("put") }
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ default",
+        "✓ override",
+        "✓ expression",
+        "✓ custom",
+        "✗ null",
+        "`{{method}}` must be an HTTP method like \"PUT\", got null",
+        "got \"P T\"",
+        "✗ lowercase",
+        "the method was sent as `put`; methods are case-sensitive, did you mean `PUT`?",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+
+    let out = p.run(&server, &["list"]);
+    assert!(
+        out.stdout.contains("{{method}} {{base}}/echo/m"),
+        "{}",
+        out.all()
+    );
+
+    p.file(
+        "bad.kl",
+        "@a(m) { connection { {{m}}X http://x } }\n@b(m) { connection { P{{m}} http://x } }\n",
+    );
+    let out = p.run(&server, &["test", "bad.kl"]);
+    assert_eq!(out.code, 2, "{}", out.all());
+    assert_eq!(
+        out.stderr
+            .matches("a templated method must be the whole word")
+            .count(),
+        2,
+        "{}",
+        out.all()
+    );
+}
+
+#[test]
 fn only_and_timeout() {
     let server = start();
     let p = project(

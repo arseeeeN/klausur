@@ -3,6 +3,11 @@
 use std::time::{Duration, Instant};
 use ureq::RequestExt;
 
+/// Methods servers commonly implement, as defined by RFC 9110 and RFC 5789.
+pub const STANDARD_METHODS: &[&str] = &[
+    "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT",
+];
+
 #[derive(Debug, Clone)]
 pub struct Prepared {
     pub method: String,

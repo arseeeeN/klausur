@@ -752,8 +752,17 @@ impl Compiler<'_> {
         if self.diags.len() > errors {
             return None;
         }
+        let method_template = b
+            .connection
+            .verb_template
+            .as_ref()
+            .map(|t| self.template(engine, file, t));
+        if self.diags.len() > errors {
+            return None;
+        }
         Some(BodyRt {
             method: b.connection.verb.clone(),
+            method_template,
             url,
             headers,
             send,

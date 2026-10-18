@@ -177,7 +177,7 @@ impl<'a> Parser<'a> {
 
     fn item(&mut self) -> PResult<Item> {
         if self.peek() == Some(b'@') {
-            return self.request().map(Item::Request);
+            return self.request().map(|r| Item::Request(Box::new(r)));
         }
         match self.word() {
             Some("let" | "const") => self.let_decl().map(Item::Let),
@@ -748,10 +748,39 @@ impl<'a> Parser<'a> {
             )
             .help("start it with a method and URL, e.g. `GET https://example.com`"));
         };
-        let (vs, ve) = ident_at(self.src, ls).unwrap_or((ls, ls));
+        let mut verb_template = None;
+        let (vs, ve) = if self.src[ls..le].starts_with("{{") {
+            // A templated method: `{{method}} https://…`, the whole first word.
+            let close = self.scan(scan::scan_interp(self.src, ls + 2))?;
+            let end = close + 2;
+            if end < le && !self.src.as_bytes()[end].is_ascii_whitespace() {
+                return Err(Diag::at(
+                    self.span(ls, end + 1),
+                    "a templated method must be the whole word",
+                )
+                .help("write `{{method}} https://…`, with the method in one interpolation"));
+            }
+            verb_template = Some(self.scan(template::parse(
+                self.src,
+                self.file,
+                ls,
+                end,
+                TemplateKind::Text,
+            ))?);
+            (ls, end)
+        } else {
+            ident_at(self.src, ls).unwrap_or((ls, ls))
+        };
         let verb = &self.src[vs..ve];
         let verb_span = self.span(vs, ve.max(vs + 1));
-        if !HTTP_METHODS.contains(&verb) {
+        if verb_template.is_none() && self.src[ve..le].starts_with("{{") {
+            return Err(Diag::at(
+                self.span(vs, ve + 2),
+                "a templated method must be the whole word",
+            )
+            .help("write `{{method}} https://…`, with the method in one interpolation"));
+        }
+        if verb_template.is_none() && !HTTP_METHODS.contains(&verb) {
             if let Some((_, proto)) = FUTURE_VERBS.iter().find(|(v, _)| *v == verb) {
                 return Err(Diag::at(
                     verb_span,
@@ -811,6 +840,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Connection {
             verb: verb.to_string(),
+            verb_template,
             url,
             headers,
             span: self.span(start, end),

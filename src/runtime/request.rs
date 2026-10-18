@@ -54,7 +54,9 @@ pub enum UndoRt {
 }
 
 pub struct BodyRt {
+    /// The method as written; `{{method}}` when templated.
     pub method: String,
+    pub method_template: Option<TemplateRt>,
     pub url: TemplateRt,
     pub headers: Vec<(String, TemplateRt)>,
     pub send: Option<SendRt>,
@@ -483,6 +485,17 @@ pub fn with_exchange(
     if f.exchange.is_none() {
         f.exchange = Some(Box::new(exchange.clone()));
     }
+    // A templated method is sent as given; `put` is not `PUT` to most servers.
+    let upper = exchange.method.to_ascii_uppercase();
+    if upper != exchange.method && http::STANDARD_METHODS.contains(&upper.as_str()) {
+        f.details.push((
+            "note".into(),
+            format!(
+                "the method was sent as `{}`; methods are case-sensitive, did you mean `{upper}`?",
+                exchange.method
+            ),
+        ));
+    }
     f.into_err()
 }
 
@@ -615,7 +628,41 @@ fn render_header(
     Ok((!saw_null).then_some(value))
 }
 
+/// A templated method must render to an HTTP token: `PUT`, `PATCH`, or a custom method.
+fn render_method(
+    shared: &Rc<Shared>,
+    engine: &Engine,
+    t: &TemplateRt,
+    written: &str,
+    scope: &mut Scope,
+) -> R<String> {
+    let mut saw_null = false;
+    let method = render_with(shared, engine, t, scope, &mut saw_null)?;
+    let valid = !saw_null
+        && !method.is_empty()
+        && method
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&c));
+    if valid {
+        return Ok(method);
+    }
+    let got = if saw_null {
+        "null".to_string()
+    } else {
+        format!("{method:?}")
+    };
+    Err(Failure::new(format!(
+        "`{written}` must be an HTTP method like \"PUT\", got {got}"
+    ))
+    .at(t.span)
+    .into_err())
+}
+
 fn build(shared: &Rc<Shared>, engine: &Engine, body: &BodyRt, scope: &mut Scope) -> R<Prepared> {
+    let method = match &body.method_template {
+        Some(t) => render_method(shared, engine, t, &body.method, scope)?,
+        None => body.method.clone(),
+    };
     let url = render(shared, engine, &body.url, scope)?;
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         let f = Failure::new(format!(
@@ -692,7 +739,7 @@ fn build(shared: &Rc<Shared>, engine: &Engine, body: &BodyRt, scope: &mut Scope)
         headers.push(("Content-Type".into(), ct));
     }
     Ok(Prepared {
-        method: body.method.clone(),
+        method,
         url,
         headers,
         body: body_bytes,
