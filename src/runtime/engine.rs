@@ -20,6 +20,8 @@ const COMPARISONS: &[&str] = &["==", "!=", "<", "<=", ">", ">="];
 
 pub fn build(shared: &Rc<Shared>) -> Engine {
     let mut engine = Engine::new();
+    // Constant folding formats `${[1, "a"]}` with Rhai's own `to_string`, not the JSON override.
+    engine.set_optimization_level(rhai::OptimizationLevel::None);
     engine.set_max_call_levels(128);
     engine.set_max_expr_depths(256, 256);
     register_expect(&mut engine);
@@ -29,6 +31,7 @@ pub fn build(shared: &Rc<Shared>) -> Engine {
     register_types(&mut engine, shared);
     register_functions(&mut engine, shared);
     super::builtins::register(&mut engine, shared);
+    super::query::register(&mut engine);
     let s = shared.clone();
     generators::register(&mut engine, Rc::new(move || s.rng()));
     engine
@@ -269,6 +272,12 @@ pub fn log(shared: &Shared, text: String) {
 // Types
 
 fn register_types(engine: &mut Engine, shared: &Rc<Shared>) {
+    // `print(m)` and `${m}` show maps and arrays as JSON, the same as `log` does.
+    engine
+        .register_fn("to_string", |m: &mut Map| value::display(&Dynamic::from(m.clone())))
+        .register_fn("to_string", |a: &mut Array| value::display(&Dynamic::from(a.clone())))
+        .register_fn("print", |m: &mut Map| value::display(&Dynamic::from(m.clone())))
+        .register_fn("print", |a: &mut Array| value::display(&Dynamic::from(a.clone())));
     engine
         .register_type_with_name::<Failure>("Failure")
         .register_get("message", |f: &mut Failure| f.message.clone())

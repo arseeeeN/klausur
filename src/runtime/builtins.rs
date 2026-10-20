@@ -3,7 +3,8 @@
 
 use super::value::{self, map_of, to_text};
 use super::{Failure, Shared};
-use rhai::{Array, Blob, Dynamic, Engine, EvalAltResult, Map};
+use rhai::{Array, Blob, Dynamic, Engine, EvalAltResult, FnPtr, Map, NativeCallContext};
+use std::any::TypeId;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -105,6 +106,15 @@ fn bytes_of(v: &Dynamic) -> Vec<u8> {
         return v.clone().cast::<Blob>();
     }
     to_text(v).into_bytes()
+}
+
+/// `sorted(a)` / `sorted(a, |x, y| …)`: a sorted copy, using Rhai's own `sort`.
+fn sorted(ctx: NativeCallContext, args: &mut [&mut Dynamic]) -> R<Array> {
+    let mut copy = args[0].clone();
+    let mut rest: Vec<Dynamic> = args[1..].iter().map(|d| (**d).clone()).collect();
+    let mut call: Vec<&mut Dynamic> = std::iter::once(&mut copy).chain(rest.iter_mut()).collect();
+    let _ = ctx.call_native_fn_raw("sort", true, &mut call)?;
+    Ok(copy.cast::<Array>())
 }
 
 // --- Server-sent events -------------------------------------------------------------------
@@ -347,6 +357,20 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     engine.register_fn("file_exists", move |path: &str| {
         s.resolve_path(path).exists()
     });
+
+    // Rhai's `trim`, `sort` and `reverse` change the value in place and return `()`, so
+    // `let t = s.trim()` silently gives `()`. These return the changed copy instead.
+    engine.register_fn("trimmed", |s: &str| s.trim().to_string());
+    engine.register_fn("reversed", |mut a: Array| {
+        a.reverse();
+        a
+    });
+    engine.register_raw_fn("sorted", [TypeId::of::<Array>()], sorted);
+    engine.register_raw_fn(
+        "sorted",
+        [TypeId::of::<Array>(), TypeId::of::<FnPtr>()],
+        sorted,
+    );
 
     engine.register_fn("sse_parse", |text: &str| parse_sse(text));
 

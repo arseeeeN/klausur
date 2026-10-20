@@ -1,6 +1,7 @@
 //! Runtime: shared state, compiled units, failures and error mapping.
 
 pub mod builtins;
+pub mod query;
 pub mod engine;
 pub mod http;
 pub mod request;

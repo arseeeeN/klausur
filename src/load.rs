@@ -3,7 +3,7 @@
 use crate::diag::{Diag, PResult, suggest};
 use crate::rewrite::Rewriter;
 use crate::runtime::request::{
-    BodyRt, ParamRt, PollRt, RequestRt, SendRt, TPart, TemplateRt, UndoRt,
+    BodyRt, ParamRt, PollMode, PollRt, RequestRt, SendRt, TPart, TemplateRt, UndoRt,
 };
 use crate::runtime::{Config, Env, Flags, GlobalVar, Shared, State, Unit, engine};
 use crate::source::{CodeBuilder, FileId, Sources, Span};
@@ -640,7 +640,7 @@ impl Compiler<'_> {
         s: usize,
         e: usize,
     ) -> Option<PollRt> {
-        const ARGS: [&str; 3] = ["until", "every", "within"];
+        const ARGS: [&str; 5] = ["until", "while", "every", "within", "for"];
         let parts = match split_top_level(src, s, e) {
             Ok(p) => p,
             Err(err) => {
@@ -649,7 +649,8 @@ impl Compiler<'_> {
                 return None;
             }
         };
-        let mut units: [Option<usize>; 3] = [None; 3];
+        let mut units: [Option<usize>; 5] = [None; 5];
+        let mut spans: [Option<Span>; 5] = [None; 5];
         let mut ok = true;
         for (ps, pe) in parts {
             let (ps, pe) = crate::syntax::scan::trim_range(src, ps, pe);
@@ -672,7 +673,7 @@ impl Compiler<'_> {
             };
             let Some(i) = ARGS.iter().position(|a| *a == arg) else {
                 let mut d = Diag::at(arg_span, format!("`poll` has no argument `{arg}`"))
-                    .help("`poll` takes `until`, `every` and `within`");
+                    .help("`poll` takes `until`, `every` and `within`, or `while`, `every` and `for`");
                 if let Some(s) = suggest(arg, ARGS) {
                     d = d.help(format!("did you mean `{s}`?"));
                 }
@@ -694,21 +695,62 @@ impl Compiler<'_> {
                 continue;
             }
             units[i] = self.expr_unit(engine, file, Span::new(file, vs, ve));
+            spans[i] = Some(arg_span);
             ok &= units[i].is_some();
         }
-        let Some(until) = units[0] else {
-            if ok {
+        let [until, while_, every, within, for_] = units;
+        let (mode, cond, limit) = match (until, while_) {
+            (Some(_), Some(_)) => {
                 self.diags.push(
-                    Diag::at(m, "`poll` needs an `until` condition")
-                        .help("e.g. `poll(until: body.state == \"done\")`"),
+                    Diag::at(spans[1].unwrap_or(m), "`poll` takes `until` or `while`, not both")
+                        .help("`until` waits for a condition, `while` checks that one keeps holding"),
                 );
+                return None;
             }
-            return None;
+            (None, None) => {
+                if ok {
+                    self.diags.push(
+                        Diag::at(m, "`poll` needs an `until` or a `while` condition")
+                            .help("e.g. `poll(until: body.state == \"done\")`, or `poll(while: body.total == 0, for: \"10s\")`"),
+                    );
+                }
+                return None;
+            }
+            (Some(cond), None) => {
+                if let Some(span) = spans[4] {
+                    self.diags.push(
+                        Diag::at(span, "`for` goes with `while`; `until` has `within`")
+                            .help("`poll(until: …, within: \"60s\")` stops as soon as the condition holds"),
+                    );
+                    return None;
+                }
+                (PollMode::Until, cond, within)
+            }
+            (None, Some(cond)) => {
+                if let Some(span) = spans[3] {
+                    self.diags.push(
+                        Diag::at(span, "`within` goes with `until`; `while` has `for`")
+                            .help("`poll(while: …, for: \"10s\")` keeps checking for the whole time"),
+                    );
+                    return None;
+                }
+                if for_.is_none() {
+                    if ok {
+                        self.diags.push(
+                            Diag::at(m, "`poll(while: …)` needs `for`, how long the condition must hold")
+                                .help("e.g. `poll(while: body.total == 0, for: \"10s\")`"),
+                        );
+                    }
+                    return None;
+                }
+                (PollMode::While, cond, for_)
+            }
         };
         ok.then_some(PollRt {
-            until,
-            every: units[1],
-            within: units[2],
+            cond,
+            mode,
+            every,
+            limit,
             span: m,
         })
     }

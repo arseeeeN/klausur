@@ -283,7 +283,7 @@ fn onboard(name) {
 | `json(path)`, `csv(path)`, `read_file(path)` | Read files relative to the current file. CSV rows become maps, with numbers and booleans converted |
 | `scoped(\|\| …)`, `transaction(\|\| …)` | Undo scopes (§8.2) |
 | `ctx()` | The running case's context (§7.1). Lets hooks hand values to the test body |
-| `log(x)`, `print(x)` | Add to the case log, shown on failure or with `-v` |
+| `log(x)`, `print(x)` | Add to the case log, shown on failure or with `-v`. Maps and arrays are shown as JSON, here and in `${…}` |
 | `fail(msg)` | Fail with a message |
 | `uuid()` | |
 | `sleep(ms)` | Wakes up early for Ctrl-C and the test's `timeout`. To wait for a condition, use `poll` (§7.3) |
@@ -296,6 +296,10 @@ fn onboard(name) {
 | `base64_encode`, `base64url_encode`, `base64_decode`, `base64_decode_blob` | |
 | `jwt_decode(token)` | `#{header, claims, signature}`, without verifying the signature |
 | `regex_match`, `regex_find`, `regex_find_all`, `regex_captures`, `regex_replace` | `(text, pattern, …)`; named groups in `regex_captures` become a map |
+| `html_select(html, css)`, `xml_select(xml, css)` | Elements matching a CSS selector, as `[#{tag, text, attrs, html}]` (`xml` instead of `html` for XML). `text` has its whitespace collapsed. XML namespaces are ignored: `entry > title` matches Atom's `<entry>` |
+| `html_text(html)` | The visible text of a page, without `<head>`, scripts and styles |
+| `json_path(value, path)` | Every value a JSONPath (RFC 9535) selects, as an array: `json_path(body, "$..url")`. The leading `$` is optional |
+| `s.trimmed()`, `a.sorted()`, `a.sorted(\|x, y\| …)`, `a.reversed()` | Changed copies. Rhai's own `trim`, `sort` and `reverse` change the value in place and return `()`, so `let t = s.trim()` is `()`. For case, Rhai's `to_lower()` and `to_upper()` already return copies |
 
 Top-level `let`s are evaluated **lazily** on first use. So their order doesn't matter, and
 an unused `env("X")` doesn't fail when `X` isn't set.
@@ -491,6 +495,22 @@ short by a test's `timeout`.
 - `expect`, `let` and `undo` run once, on the response that satisfied `until`.
 - When `within` runs out, the call fails with the number of attempts and the last response,
   or the last error.
+
+`poll(while: …, for: …)` checks the opposite: that something keeps holding, for instance that
+a file the service should ignore never gets indexed.
+
+```
+@stillUnindexed(name) poll(while: body.total == 0, every: "1s", for: "15s") {
+    connection { GET {{base}}/search?q={{name}} }
+}
+```
+
+- The request repeats for the whole of `for`, and the call fails on the first response
+  where `while` doesn't hold, showing that response.
+- `for` is required. `within` goes with `until` and `for` with `while`.
+- Unlike `until`, an attempt that gets no response fails the call: it proves nothing about the
+  condition.
+- `expect`, `let` and `undo` run once, on the last response.
 
 A polling call blocks the test that makes it, like any other request. Polling needs no
 `async` in the scripting language.
@@ -719,7 +739,10 @@ Also implemented:
 - the request modifiers `timeout` and `poll`
 - multipart and file bodies, and writing files
 - `undo(|| …)` for cleanup in scripts
-- SSE parsing, and base64, JWT and regex helpers See [GAPS.md](GAPS.md) for what testing a real service turned up.
+- SSE parsing, and base64, JWT and regex helpers
+- CSS selectors over HTML and XML, and JSONPath
+
+See [GAPS.md](GAPS.md) for what testing a real service turned up.
 
 Not yet: the recovery journal and `recover`, `fmt`, non-HTTP protocols, modifiers on
 functions, shrinking, OpenAPI generators, CI reporters, real per-file

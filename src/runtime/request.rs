@@ -73,10 +73,28 @@ pub struct BodyRt {
 
 pub struct PollRt {
     /// An expression evaluated with the response in scope, or a closure called with the response.
-    pub until: usize,
+    pub cond: usize,
+    /// `until`: repeat until `cond` holds. `while`: repeat for `limit`, failing when it doesn't.
+    pub mode: PollMode,
     pub every: Option<usize>,
-    pub within: Option<usize>,
+    /// `within` for `until`, `for` for `while`.
+    pub limit: Option<usize>,
     pub span: Span,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum PollMode {
+    Until,
+    While,
+}
+
+impl PollMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            PollMode::Until => "until",
+            PollMode::While => "while",
+        }
+    }
 }
 
 pub struct RequestRt {
@@ -108,6 +126,9 @@ type R<T> = Result<T, Box<EvalAltResult>>;
 pub fn call(shared: &Rc<Shared>, engine: &Engine, req: &RequestRt, args: Args) -> R<Dynamic> {
     let mut scope = bind(shared, engine, req, args)?;
     let (mut result, exchange) = match &req.body.poll {
+        Some(poll) if poll.mode == PollMode::While => {
+            poll_while(shared, engine, req, poll, &mut scope)?
+        }
         Some(poll) => poll_until(shared, engine, req, poll, &mut scope)?,
         None => {
             reset_http_flags(shared);
@@ -183,7 +204,7 @@ fn poll_until(
             .map_err(|e| shared.to_failure(&e, Some(unit)).into_err())
     };
     let every = duration(poll.every, POLL_EVERY)?;
-    let within = duration(poll.within, POLL_WITHIN)?;
+    let within = duration(poll.limit, POLL_WITHIN)?;
     let started = Instant::now();
     let mut attempts = 0;
     let mut any_timed_out = false;
@@ -193,7 +214,7 @@ fn poll_until(
         reset_http_flags(shared);
         let last = match perform(shared, engine, &req.body, &mut s) {
             Ok((result, exchange)) => {
-                let held = until_holds(shared, engine, poll, &mut s, &result)
+                let held = cond_holds(shared, engine, poll, &mut s, &result)
                     .map_err(|e| with_exchange(shared, e, &exchange))?;
                 if held {
                     *scope = s;
@@ -249,15 +270,73 @@ fn poll_until(
     }
 }
 
-/// Evaluate `until` against a response: a boolean expression, or a closure taking the response.
-fn until_holds(
+/// `poll(while: ..., for: ...)`: send the request for the whole duration, failing on the first
+/// response where `while` doesn't hold. Unlike `until`, a failed connection fails the request:
+/// it proves nothing about the condition. Returns the last response.
+fn poll_while(
+    shared: &Rc<Shared>,
+    engine: &Engine,
+    req: &RequestRt,
+    poll: &PollRt,
+    scope: &mut Scope<'static>,
+) -> R<(Map, Exchange)> {
+    let base = scope.clone();
+    let lasting = match poll.limit {
+        Some(unit) => crate::testing::parse_duration(&shared.eval(engine, unit, scope)?)
+            .map_err(|e| shared.to_failure(&e, Some(unit)).into_err())?,
+        None => unreachable!("`while` is checked to come with `for`"),
+    };
+    let every = match poll.every {
+        Some(unit) => crate::testing::parse_duration(&shared.eval(engine, unit, scope)?)
+            .map_err(|e| shared.to_failure(&e, Some(unit)).into_err())?,
+        None => POLL_EVERY,
+    };
+    let started = Instant::now();
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let mut s = base.clone();
+        let (result, exchange) = perform(shared, engine, &req.body, &mut s)?;
+        let held = cond_holds(shared, engine, poll, &mut s, &result)
+            .map_err(|e| with_exchange(shared, e, &exchange))?;
+        let elapsed = started.elapsed();
+        if !held {
+            let mut f = Failure::new(format!(
+                "`while` stopped holding for `{}` after {} ({} {})",
+                req.name,
+                crate::testing::humantime(elapsed),
+                attempts,
+                if attempts == 1 { "poll" } else { "polls" },
+            ));
+            f.exchange = Some(Box::new(exchange));
+            f.span = Some(poll.span);
+            return Err(f.into_err());
+        }
+        if elapsed >= lasting {
+            *scope = s;
+            return Ok((result, exchange));
+        }
+        if let Err(why) = wait(shared, every.min(lasting - elapsed)) {
+            let mut f = Failure::new(format!(
+                "`{}` was still polling after {attempts} attempts when {why}",
+                req.name
+            ));
+            f.span = Some(poll.span);
+            return Err(f.into_err());
+        }
+    }
+}
+
+/// Evaluate the condition against a response: a boolean expression, or a closure taking the
+/// response.
+fn cond_holds(
     shared: &Rc<Shared>,
     engine: &Engine,
     poll: &PollRt,
     scope: &mut Scope,
     response: &Map,
 ) -> R<bool> {
-    let unit = poll.until;
+    let unit = poll.cond;
     let mut v = shared.eval(engine, unit, scope)?;
     if let Some(f) = v.clone().try_cast::<rhai::FnPtr>() {
         let u = shared.unit(unit);
@@ -267,7 +346,8 @@ fn until_holds(
     }
     v.as_bool().map_err(|_| {
         let mut f = Failure::new(format!(
-            "`until` must be true or false, got {}",
+            "`{}` must be true or false, got {}",
+            poll.mode.name(),
             value::display(&v)
         ));
         f.span = Some(poll.span);

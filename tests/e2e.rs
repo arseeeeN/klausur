@@ -866,6 +866,10 @@ fn polling() {
 @badUntil(key) poll(until: body.state) {
     connection { GET {{base}}/jobs/{{key}} }
 }
+@stays(key, after) poll(while: body.state == "pending", for: "300ms", every: "50ms") {
+    connection { GET {{base}}/jobs/{{key}}?after={{after}} }
+    let polls = body.polls
+}
 
 test "waits for the job" { expect job("a").polls == 3 }
 test "closure condition" { expect unflake("b").body.attempts == 3 }
@@ -873,6 +877,8 @@ test "gives up" { never("c") }
 test "timeouts count as not yet" { expect warmup("d").body.ready }
 test "until must be a boolean" { badUntil("e") }
 test "sleep honours the test timeout" timeout("200ms") { sleep(5000) }
+test "while holds for the whole time" { expect stays("f", 1000).polls >= 6 }
+test "while stops holding" { stays("g", 3) }
 "#,
     );
     let started = std::time::Instant::now();
@@ -893,6 +899,11 @@ test "sleep honours the test timeout" timeout("200ms") { sleep(5000) }
         r#""state": "pending""#,
         "`until` must be true or false, got \"pending\"",
         "test timed out after 200 ms",
+        "✓ while holds for the whole time",
+        "✗ while stops holding",
+        "`while` stopped holding for `stays` after",
+        "(3 polls)",
+        r#""state": "done""#,
     ] {
         assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
     }
@@ -903,13 +914,21 @@ test "sleep honours the test timeout" timeout("200ms") { sleep(5000) }
 @a() poll(body.ok) { connection { GET http://x } }
 @b() poll(every: "1s") { connection { GET http://x } }
 @c() poll(until: true, evry: "1s") { connection { GET http://x } }
+@d() poll(while: true) { connection { GET http://x } }
+@e() poll(until: true, while: true) { connection { GET http://x } }
+@f() poll(until: true, for: "1s") { connection { GET http://x } }
+@g() poll(while: true, for: "1s", within: "2s") { connection { GET http://x } }
 "#,
     );
     let out = p.run(&server, &["test", "bad.kl"]);
     assert_eq!(out.code, 2, "{}", out.all());
     for line in [
         "`poll` arguments need names",
-        "`poll` needs an `until` condition",
+        "`poll` needs an `until` or a `while` condition",
+        "`poll(while: …)` needs `for`",
+        "`poll` takes `until` or `while`, not both",
+        "`for` goes with `while`; `until` has `within`",
+        "`within` goes with `until`; `while` has `for`",
         "`poll` has no argument `evry`",
         "did you mean `every`?",
     ] {
@@ -1049,4 +1068,71 @@ fn load_errors_exit_2() {
         "{}",
         out.all()
     );
+}
+
+#[test]
+fn queries_and_value_helpers() {
+    let server = start();
+    let p = project(
+        "queries",
+        r##"
+const PAGE = `<html><head><title>Otters</title><script>var x = 1</script></head><body>
+  <nav><a href="/">Home</a></nav>
+  <main><h1>Otters</h1><p class="lead">They <b>hold hands</b>.</p><p>Second</p></main>
+</body></html>`;
+const FEED = `<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><title>One</title><link href="/1"/></entry>
+  <entry><title>Two</title><link href="/2"/></entry>
+</feed>`;
+
+test "html" {
+    expect html_select(PAGE, "main p").map(|p| p.text) == ["They hold hands.", "Second"]
+    expect html_select(PAGE, "p.lead")[0].html.contains("<b>hold hands</b>")
+    expect html_select(PAGE, "nav a")[0].attrs.href == "/"
+    expect html_text(PAGE) == "Home Otters They hold hands. Second"
+}
+test "xml" {
+    expect xml_select(FEED, "entry > title").map(|t| t.text) == ["One", "Two"]
+    expect xml_select(FEED, "entry:last-child link")[0].attrs.href == "/2"
+}
+test "json path" {
+    let v = #{a: #{url: "x"}, b: [#{url: "y"}, #{url: "z", n: 2}]}
+    expect json_path(v, "$..url") == ["x", "y", "z"]
+    expect json_path(v, "b[?@.n > 1].url") == ["z"]
+}
+test "copies instead of in place" {
+    let s = "  Hi "
+    expect s.trimmed() == "Hi"
+    let a = [3, 1, 2]
+    expect a.sorted() == [1, 2, 3]
+    expect a.sorted(|x, y| y - x) == [3, 2, 1]
+    expect a.reversed() == [2, 1, 3]
+    expect a == [3, 1, 2]
+}
+test "print shows json" {
+    print(#{a: [1, "b", ()]})
+    print(`in text: ${[1, "c"]}`)
+    expect false
+}
+test "bad selector" { html_select(PAGE, "p[") }
+test "bad xml" { xml_select("<a>", "a") }
+test "bad path" { json_path(#{}, "$[") }
+"##,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ html",
+        "✓ xml",
+        "✓ json path",
+        "✓ copies instead of in place",
+        r#"{"a":[1,"b",null]}"#,
+        r#"in text: [1,"c"]"#,
+        "`p[` isn't a valid CSS selector",
+        "not valid XML",
+        "`$[` isn't a valid JSONPath",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
 }
