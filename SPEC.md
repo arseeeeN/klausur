@@ -150,8 +150,9 @@ The HTTP method can be a variable, written as one interpolation in place of the 
 - It is sent as given. Methods are case-sensitive, so `"put"` isn't uppercased. If an
   expectation fails after a lowercase standard method was sent, the failure says so.
 - Literal methods are still checked when the file loads.
-- `undo` doesn't know which method was sent. Branch on the parameter if that matters:
-  `undo { if method == "POST" { deleteByUrl(jwt, url) } }`.
+- `undo` doesn't know which method was sent. If that matters, undo with a function that
+  branches on the parameter: `undo cleanup(method, jwt, url)`, with
+  `fn cleanup(method, jwt, url) { if method == "POST" { deleteByUrl(jwt, url) } }`.
 
 ### 4.3 `send` and interpolation
 
@@ -783,6 +784,8 @@ Also implemented:
 - SSE parsing, and base64, JWT and regex helpers
 - CSS selectors over HTML and XML, and JSONPath
 - `where:` explanations of failed expectations
+- a tree-sitter grammar with highlight, fold and indent queries, usable as a Neovim plugin
+  (`editors/tree-sitter-klausur`)
 - `parallel` tests and `-j N`
 
 See [GAPS.md](GAPS.md) for what testing a real service turned up.

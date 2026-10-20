@@ -1,0 +1,464 @@
+============================================================
+request with connection, json send and captures
+============================================================
+
+@createUser(name = "alice") timeout("5s") {
+    connection {
+        POST {{base}}/users?x={{name}} // note
+        Authorization: Bearer {{jwt}}
+    }
+    send { "name": {{name}}, "tag": "id-{{name}}", "n": -1.5, "ok": null, "xs": [1, true] }
+    expect status == 201
+    let id = body.id
+}
+
+------------------------------------------------------------
+
+(Rhai
+  (Request
+    (ident)
+    (DefParamList
+      (DefParam
+        (ident)
+        (Expr
+          (ExprLit
+            (Lit
+              (lit_str))))))
+    (Modifier
+      (ident)
+      (ArgList
+        (Expr
+          (ExprLit
+            (Lit
+              (lit_str))))))
+    (RequestBody
+      (Section
+        (Connection
+          (RequestLine
+            (method)
+            (Url
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))
+              (text)
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))))
+          (comment_line)
+          (Header
+            (header_name)
+            (HeaderValue
+              (text)
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))))))
+      (Section
+        (Send
+          (JsonObject
+            (JsonPair
+              (JsonString
+                (json_string_content))
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident))))))
+            (JsonPair
+              (JsonString
+                (json_string_content))
+              (JsonString
+                (json_string_content)
+                (Interp
+                  (Expr
+                    (ExprPath
+                      (Path
+                        (ident)))))))
+            (JsonPair
+              (JsonString
+                (json_string_content))
+              (json_number))
+            (JsonPair
+              (JsonString
+                (json_string_content))
+              (lit_null))
+            (JsonPair
+              (JsonString
+                (json_string_content))
+              (JsonArray
+                (json_number)
+                (lit_bool))))))
+      (Section
+        (Expect
+          (Expr
+            (ExprBinary
+              (Expr
+                (ExprPath
+                  (Path
+                    (ident))))
+              (binop)
+              (Expr
+                (ExprLit
+                  (Lit
+                    (lit_int))))))))
+      (Section
+        (ExprDeclareVar
+          (ident)
+          (Expr
+            (ExprDotAccess
+              (Expr
+                (ExprPath
+                  (Path
+                    (ident))))
+              (Expr
+                (ExprPath
+                  (Path
+                    (ident)))))))))))
+
+============================================================
+urls keep double slashes, comments need a space
+============================================================
+
+@a() {
+    connection { GET https://example.com/a//b }
+}
+
+------------------------------------------------------------
+
+(Rhai
+  (Request
+    (ident)
+    (DefParamList)
+    (RequestBody
+      (Section
+        (Connection
+          (RequestLine
+            (method)
+            (Url
+              (text))))))))
+
+============================================================
+templated method and fenced body
+============================================================
+
+@raw(method = "PUT") {
+    connection { {{method}} {{base}}/x }
+    send ```
+        hello {{name}} // literal
+    ```
+}
+
+------------------------------------------------------------
+
+(Rhai
+  (Request
+    (ident)
+    (DefParamList
+      (DefParam
+        (ident)
+        (Expr
+          (ExprLit
+            (Lit
+              (lit_str))))))
+    (RequestBody
+      (Section
+        (Connection
+          (RequestLine
+            (Interp
+              (Expr
+                (ExprPath
+                  (Path
+                    (ident)))))
+            (Url
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))
+              (text)))))
+      (Section
+        (Send
+          (Fenced
+            (fenced_text)
+            (Interp
+              (Expr
+                (ExprPath
+                  (Path
+                    (ident)))))
+            (fenced_text)
+            (fenced_text)))))))
+
+============================================================
+send expression and expect block
+============================================================
+
+@up(f) {
+    connection { POST {{base}}/files }
+    send = multipart(#{ file: f })
+    expect {
+        status == 200
+        body.id is string
+    }
+}
+
+------------------------------------------------------------
+
+(Rhai
+  (Request
+    (ident)
+    (DefParamList
+      (DefParam
+        (ident)))
+    (RequestBody
+      (Section
+        (Connection
+          (RequestLine
+            (method)
+            (Url
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))
+              (text)))))
+      (Section
+        (Send
+          (Expr
+            (ExprCall
+              (Expr
+                (ExprPath
+                  (Path
+                    (ident))))
+              (ArgList
+                (Expr
+                  (ExprObject
+                    (ObjectField
+                      (ident)
+                      (Expr
+                        (ExprPath
+                          (Path
+                            (ident))))))))))))
+      (Section
+        (Expect
+          (Expr
+            (ExprBlock
+              (Stmt
+                (Item
+                  (Expr
+                    (ExprBinary
+                      (Expr
+                        (ExprPath
+                          (Path
+                            (ident))))
+                      (binop)
+                      (Expr
+                        (ExprLit
+                          (Lit
+                            (lit_int))))))))
+              (Stmt
+                (Item
+                  (Expr
+                    (ExprBinary
+                      (Expr
+                        (ExprDotAccess
+                          (Expr
+                            (ExprPath
+                              (Path
+                                (ident))))
+                          (Expr
+                            (ExprPath
+                              (Path
+                                (ident))))))
+                      (binop)
+                      (Expr
+                        (ExprPath
+                          (Path
+                            (ident)))))))))))))))
+
+============================================================
+undo forms
+============================================================
+
+@a() {
+    connection { POST {{base}}/a }
+    undo { DELETE {{base}}/a/{{id}} }
+}
+@b() {
+    connection { POST {{base}}/b }
+    undo {
+        connection { DELETE {{base}}/b }
+        expect status == 204
+    }
+}
+@c() {
+    connection { POST {{base}}/c }
+    undo ns::deleteC(id)
+}
+
+------------------------------------------------------------
+
+(Rhai
+  (Request
+    (ident)
+    (DefParamList)
+    (RequestBody
+      (Section
+        (Connection
+          (RequestLine
+            (method)
+            (Url
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))
+              (text)))))
+      (Undo
+        (UndoBlock
+          (RequestLine
+            (method)
+            (Url
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))
+              (text)
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))))))))
+  (Request
+    (ident)
+    (DefParamList)
+    (RequestBody
+      (Section
+        (Connection
+          (RequestLine
+            (method)
+            (Url
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))
+              (text)))))
+      (Undo
+        (UndoBlock
+          (Section
+            (Connection
+              (RequestLine
+                (method)
+                (Url
+                  (Interp
+                    (Expr
+                      (ExprPath
+                        (Path
+                          (ident)))))
+                  (text)))))
+          (Section
+            (Expect
+              (Expr
+                (ExprBinary
+                  (Expr
+                    (ExprPath
+                      (Path
+                        (ident))))
+                  (binop)
+                  (Expr
+                    (ExprLit
+                      (Lit
+                        (lit_int))))))))))))
+  (Request
+    (ident)
+    (DefParamList)
+    (RequestBody
+      (Section
+        (Connection
+          (RequestLine
+            (method)
+            (Url
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))
+              (text)))))
+      (Undo
+        (UndoCall
+          (Path
+            (ident)
+            (ident))
+          (ArgList
+            (Expr
+              (ExprPath
+                (Path
+                  (ident))))))))))
+
+============================================================
+poll with keyword argument names
+============================================================
+
+@job(id) poll(while: body.state == "pending", for: "10s") {
+    connection { GET {{base}}/jobs/{{id}} }
+}
+
+------------------------------------------------------------
+
+(Rhai
+  (Request
+    (ident)
+    (DefParamList
+      (DefParam
+        (ident)))
+    (Modifier
+      (ident)
+      (ArgList
+        (NamedArg
+          (ident)
+          (Expr
+            (ExprBinary
+              (Expr
+                (ExprDotAccess
+                  (Expr
+                    (ExprPath
+                      (Path
+                        (ident))))
+                  (Expr
+                    (ExprPath
+                      (Path
+                        (ident))))))
+              (binop)
+              (Expr
+                (ExprLit
+                  (Lit
+                    (lit_str)))))))
+        (NamedArg
+          (ident)
+          (Expr
+            (ExprLit
+              (Lit
+                (lit_str)))))))
+    (RequestBody
+      (Section
+        (Connection
+          (RequestLine
+            (method)
+            (Url
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident)))))
+              (text)
+              (Interp
+                (Expr
+                  (ExprPath
+                    (Path
+                      (ident))))))))))))

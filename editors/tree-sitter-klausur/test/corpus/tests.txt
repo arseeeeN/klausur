@@ -1,0 +1,207 @@
+============================================================
+test with values, cases and modifiers
+============================================================
+
+test "roles" (role in ["user", "admin"], n) cases csv("rows.csv") label(`${role}`) rollback {
+    expect createUser(name: "bob", role: role).body.role == role
+    assert x != null
+}
+
+------------------------------------------------------------
+
+(Rhai
+  (Test
+    (lit_str)
+    (TestParamList
+      (TestParam
+        (ident)
+        (Expr
+          (ExprArray
+            (Expr
+              (ExprLit
+                (Lit
+                  (lit_str))))
+            (Expr
+              (ExprLit
+                (Lit
+                  (lit_str)))))))
+      (TestParam
+        (ident)))
+    (Expr
+      (ExprCall
+        (Expr
+          (ExprPath
+            (Path
+              (ident))))
+        (ArgList
+          (Expr
+            (ExprLit
+              (Lit
+                (lit_str)))))))
+    (Modifier
+      (ident)
+      (ArgList
+        (Expr
+          (ExprLit
+            (Lit
+              (lit_str
+                (str_template_expr
+                  (Stmt
+                    (Item
+                      (Expr
+                        (ExprPath
+                          (Path
+                            (ident)))))))))))))
+    (Modifier
+      (ident))
+    (ExprBlock
+      (Stmt
+        (Item
+          (Expr
+            (Expect
+              (Expr
+                (ExprBinary
+                  (Expr
+                    (ExprDotAccess
+                      (Expr
+                        (ExprDotAccess
+                          (Expr
+                            (ExprCall
+                              (Expr
+                                (ExprPath
+                                  (Path
+                                    (ident))))
+                              (ArgList
+                                (NamedArg
+                                  (ident)
+                                  (Expr
+                                    (ExprLit
+                                      (Lit
+                                        (lit_str)))))
+                                (NamedArg
+                                  (ident)
+                                  (Expr
+                                    (ExprPath
+                                      (Path
+                                        (ident))))))))
+                          (Expr
+                            (ExprPath
+                              (Path
+                                (ident))))))
+                      (Expr
+                        (ExprPath
+                          (Path
+                            (ident))))))
+                  (binop)
+                  (Expr
+                    (ExprPath
+                      (Path
+                        (ident))))))))))
+      (Stmt
+        (Item
+          (Expr
+            (Expect
+              (Expr
+                (ExprBinary
+                  (Expr
+                    (ExprPath
+                      (Path
+                        (ident))))
+                  (binop)
+                  (Expr
+                    (ExprLit
+                      (Lit
+                        (lit_null)))))))))))))
+
+============================================================
+plain rhai items
+============================================================
+
+import "lib.kl" as lib
+let base = env("BASE") // where the API runs
+fn helper(a, b = 2) { a + b }
+test "t" { expect helper(1) == 3 }
+
+------------------------------------------------------------
+
+(Rhai
+  (Stmt
+    (Item
+      (Expr
+        (ExprImport
+          (Expr
+            (ExprLit
+              (Lit
+                (lit_str))))
+          (ident)))))
+  (Stmt
+    (Item
+      (Expr
+        (ExprDeclareVar
+          (ident)
+          (Expr
+            (ExprCall
+              (Expr
+                (ExprPath
+                  (Path
+                    (ident))))
+              (ArgList
+                (Expr
+                  (ExprLit
+                    (Lit
+                      (lit_str)))))))))))
+  (comment_line)
+  (Stmt
+    (Item
+      (Expr
+        (ExprFn
+          (FnDeclName
+            (ident))
+          (DefParamList
+            (DefParam
+              (ident))
+            (DefParam
+              (ident)
+              (Expr
+                (ExprLit
+                  (Lit
+                    (lit_int))))))
+          (ExprBlock
+            (Stmt
+              (Item
+                (Expr
+                  (ExprBinary
+                    (Expr
+                      (ExprPath
+                        (Path
+                          (ident))))
+                    (binop)
+                    (Expr
+                      (ExprPath
+                        (Path
+                          (ident)))))))))))))
+  (Test
+    (lit_str)
+    (ExprBlock
+      (Stmt
+        (Item
+          (Expr
+            (Expect
+              (Expr
+                (ExprBinary
+                  (Expr
+                    (ExprCall
+                      (Expr
+                        (ExprPath
+                          (Path
+                            (ident))))
+                      (ArgList
+                        (Expr
+                          (ExprLit
+                            (Lit
+                              (lit_int)))))))
+                  (binop)
+                  (Expr
+                    (ExprLit
+                      (Lit
+                        (lit_int)))))))))))))

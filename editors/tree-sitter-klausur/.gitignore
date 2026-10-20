@@ -1,0 +1,4 @@
+node_modules/
+parser/
+build/
+*.wasm
