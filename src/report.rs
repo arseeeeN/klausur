@@ -1,8 +1,7 @@
 //! Human-readable output: test progress, failures, dirty reports and summaries.
 
 use crate::diag::Diag;
-use crate::runtime::request::UndoRt;
-use crate::runtime::undo::DirtyEntry;
+use crate::runtime::undo::DirtyReport;
 use crate::runtime::value::truncate;
 use crate::runtime::{Exchange, Failure};
 use crate::source::Sources;
@@ -81,6 +80,17 @@ pub fn render_failure(f: &Failure, sources: &Sources) -> String {
         d = d.note(format!("called from {}", location(sources, **span)));
     }
     let mut out = d.render(sources);
+    if !f.values.is_empty() {
+        out.push_str(&format!("  {}\n", dim("where:")));
+        for (k, v) in &f.values {
+            let v = truncate(v, 300);
+            if k.chars().count() + v.chars().count() <= 90 {
+                out.push_str(&format!("    {} {} {v}\n", bold(k), dim("=")));
+            } else {
+                out.push_str(&format!("    {} {}\n      {v}\n", bold(k), dim("=")));
+            }
+        }
+    }
     if let Some(x) = &f.exchange {
         out.push_str(&render_exchange(x));
     }
@@ -154,7 +164,7 @@ fn indent(text: &str, prefix: &str) -> String {
     text.lines().map(|l| format!("{prefix}{l}\n")).collect()
 }
 
-pub fn render_dirty(entries: &[(String, u64, &DirtyEntry)], sources: &Sources) -> String {
+pub fn render_dirty(entries: &[(String, u64, &DirtyReport)], sources: &Sources) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "\n{} {}\n",
@@ -166,14 +176,15 @@ pub fn render_dirty(entries: &[(String, u64, &DirtyEntry)], sources: &Sources) -
         ))
     ));
     for (case, seed, e) in entries {
-        let what = match e.action.kind {
-            UndoRt::Script(..) => format!("undo: {}", bold(&e.action.label)),
-            _ => format!("undo for {}", bold(&e.action.label)),
+        let what = if e.script {
+            format!("undo: {}", bold(&e.label))
+        } else {
+            format!("undo for {}", bold(&e.label))
         };
         out.push_str(&format!(
             "\n  {} {what} ({})\n",
             red("✗"),
-            location(sources, e.action.span)
+            location(sources, e.span)
         ));
         if !case.is_empty() {
             out.push_str(&format!(
@@ -182,10 +193,9 @@ pub fn render_dirty(entries: &[(String, u64, &DirtyEntry)], sources: &Sources) -
                 dim(format!("seed {seed}"))
             ));
         }
-        out.push_str(&format!("    {} {}\n", dim("created by:"), e.action.origin));
-        if !e.action.captures.is_empty() {
+        out.push_str(&format!("    {} {}\n", dim("created by:"), e.origin));
+        if !e.captures.is_empty() {
             let caps: Vec<String> = e
-                .action
                 .captures
                 .iter()
                 .map(|(k, v)| format!("{k}={v}"))
@@ -247,7 +257,7 @@ pub struct Reporter<'a> {
     pub generated: bool,
     current_file: Option<String>,
     failures: Vec<CaseResult>,
-    dirty: Vec<(String, u64, DirtyEntry)>,
+    dirty: Vec<(String, u64, DirtyReport)>,
     pub summary: Summary,
 }
 
@@ -320,19 +330,7 @@ impl<'a> Reporter<'a> {
 
     /// A test that couldn't even produce cases (modifier or parameter errors).
     pub fn test_error(&mut self, file: &str, name: &str, failure: Failure) {
-        self.case(
-            file,
-            CaseResult {
-                test: name.to_string(),
-                label: None,
-                args: Vec::new(),
-                outcome: Err(failure),
-                dirty: Vec::new(),
-                duration: Duration::ZERO,
-                logs: Vec::new(),
-                generated: false,
-            },
-        );
+        self.case(file, CaseResult::error(name.to_string(), failure));
     }
 
     pub fn finish(&mut self, elapsed: Duration) {
@@ -362,7 +360,7 @@ impl<'a> Reporter<'a> {
             }
         }
         if !self.dirty.is_empty() {
-            let entries: Vec<(String, u64, &DirtyEntry)> = self
+            let entries: Vec<(String, u64, &DirtyReport)> = self
                 .dirty
                 .iter()
                 .map(|(c, s, d)| (c.clone(), *s, d))

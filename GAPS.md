@@ -29,16 +29,17 @@ answers, path-based ACLs) showed what klausur was missing. The suite lives in
 | `print` showed Rhai syntax (`#{"a": 1}`), `log` JSON | Both show JSON, and so does `${…}` |
 | `trim()`, `sort()` and `reverse()` change in place and return `()`, so `let t = s.trim()` is `()` | `trimmed()`, `sorted()`, `reversed()` return copies |
 | `poll` could only wait for something to happen, not check that it doesn't | `poll(while: …, for: "15s")` |
+| A failed `expect xs.all(…)` or `expect !x.contains(y)` only said "the expression is false" | The report lists the parts' values under `where:`, and the elements that broke `all` or matched `some` |
+| Tests ran one at a time, so the watcher tests' waits added up | `parallel` marks tests that may overlap; `-j N` sets how many. Unmarked tests still run alone |
 | The request timeout was a fixed 30 s, and a timed-out request left server state behind without an undo | `--timeout SECS`, the per-request `timeout("90s")` modifier, and timed-out requests register their undo |
 
 ## Still open
 
-Roughly by how much they'd help:
-
-1. **Parallelism.** The suite takes ~3 min, almost all of it waiting on the LLM, the service's
-   rate limiter and the file watcher's 5 s schedule. Running independent tests concurrently
-   would cut that down, given a per-suite concurrency limit so the limiter isn't hit harder.
-2. **Rhai quirks still worth documenting:** `call` is a reserved word, and `try` is only a
+1. **Rhai quirks still worth documenting:** `call` is a reserved word, and `try` is only a
    statement.
-3. **Streaming assertions.** SSE bodies are read completely before parsing, so time to first
+2. **Streaming assertions.** SSE bodies are read completely before parsing, so time to first
    event can't be measured or asserted.
+3. **Per-group concurrency limits.** `-j` applies to the whole run. LLM tests and
+   indexing tests would want different limits (`parallel("llm", 1)`), and so would a service
+   with a rate limiter. Running ai-search's suite showed the limiter, not test concurrency,
+   was the bottleneck.

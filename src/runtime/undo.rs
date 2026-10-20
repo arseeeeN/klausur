@@ -42,6 +42,35 @@ pub struct DirtyEntry {
     pub consequent: bool,
 }
 
+/// What the dirty report shows about a [`DirtyEntry`], without the script values, so results
+/// can come back from worker threads.
+#[derive(Clone)]
+pub struct DirtyReport {
+    pub label: String,
+    pub script: bool,
+    pub origin: String,
+    pub captures: Vec<(String, String)>,
+    pub span: Span,
+    pub attempts: Vec<String>,
+    pub exchange: Option<Box<Exchange>>,
+    pub consequent: bool,
+}
+
+impl From<&DirtyEntry> for DirtyReport {
+    fn from(e: &DirtyEntry) -> Self {
+        DirtyReport {
+            label: e.action.label.clone(),
+            script: matches!(e.action.kind, UndoRt::Script(..)),
+            origin: e.action.origin.clone(),
+            captures: e.action.captures.clone(),
+            span: e.action.span,
+            attempts: e.attempts.clone(),
+            exchange: e.exchange.clone(),
+            consequent: e.consequent,
+        }
+    }
+}
+
 pub fn open(shared: &Shared, kind: ScopeKind) {
     shared.state.borrow_mut().scopes.push(UndoScope {
         kind,
@@ -143,6 +172,7 @@ fn run_with_retries(
 }
 
 /// Run an undo action once. On failure, also says whether retrying might help.
+#[allow(clippy::result_large_err)] // private, and only on the failure path
 fn run_once(
     shared: &Rc<Shared>,
     engine: &Engine,

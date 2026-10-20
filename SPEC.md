@@ -197,8 +197,24 @@ request and response.
 `array`, `map`, `blob`, `null`.
 
 For a failed comparison, the report shows both values, e.g. `expectation failed: 404 == 200`.
-In `a && b` chains, it reports the part that failed. Operands are evaluated only once, so
-a request inside an expectation runs once.
+In `a && b` chains, it reports the part that failed.
+
+Any other failed expectation lists the values of its parts under `where:`:
+
+```
+  x expectation failed: the expression is false
+   ,-[rbac.test.kl:42:12]
+42 |     expect !r.urls.contains(SALARIES_URL)
+  where:
+    r.urls = ["klausur://otterbrook/office","klausur://otterbrook/hr/salaries"]
+    SALARIES_URL = "klausur://otterbrook/hr/salaries"
+```
+
+- It shows variables, property chains and function arguments, but not literals.
+- For a chain it shows the receiver of the last call, and for `expect hit.ready` it shows `hit`.
+- `xs.all(|x| …)` lists the elements it fails for, and `xs.some(|x| …)` the ones it holds for.
+  That's useful under `!`: `expect !values.some(|v| v.contains(SECRET))`.
+- Every part is evaluated once, so a request inside an expectation is sent once.
 
 ### 4.5 Calling requests
 
@@ -460,6 +476,7 @@ These are implemented in Rust on top of the same API:
 - `skip("reason")`
 - `only`
 - `label(expr)`: names each case in the report (§6.3)
+- `parallel`: the test's cases may run at the same time as other `parallel` cases (§7.4)
 
 ### 7.3 Modifiers on requests and functions
 
@@ -516,6 +533,30 @@ A polling call blocks the test that makes it, like any other request. Polling ne
 `async` in the scripting language.
 
 *(post-v1)* Modifiers on `fn`s.
+
+### 7.4 Parallel tests
+
+Tests run one at a time unless they're marked `parallel`. A test that checks global state
+("exactly one document exists", "the count went up by one") would break if another test
+changed that state meanwhile. Tests don't run in parallel by default, so a test that works
+on its own can't fail only because of another one.
+
+```
+test "indexing needs the write role" (role in ["none", "reader", "admin"]) parallel { … }
+```
+
+- Up to `-j N` (default 4) `parallel` cases run at once, including cases of the same test.
+- Tests keep their order. A test without `parallel` waits until every running case has
+  finished and runs alone, and nothing after it starts until it's done. Only neighbouring
+  `parallel` cases overlap each other.
+- So a final check like `"bulk rollback left nothing behind"` can stay serial and still see
+  every earlier `parallel` test finished and cleaned up.
+- Results are printed in declaration order, whatever order they finish in.
+- `-j 1` runs everything serially.
+
+Each worker thread loads its own copy of the files. Top-level `let`s are evaluated once per
+worker, and `cases` sources are read once per worker. With `-v`, the request trace of a
+`parallel` case goes into its log rather than straight to stderr, so it isn't interleaved.
 
 ---
 
@@ -688,7 +729,7 @@ should grow beyond dotenv, e.g. with per-environment base URLs.)*
 
 ```
 klausur run  <file>[#name] [-a k=v ...] [--env NAME] [--timeout SECS] [-q]
-klausur test [paths/filters] [--seed N] [--case k=v|label] [--tag T] [--on-dirty=abort|continue] [--env NAME] [--timeout SECS] [-v]
+klausur test [paths/filters] [--seed N] [--case k=v|label] [--tag T] [--on-dirty=abort|continue] [--env NAME] [--timeout SECS] [-j N] [-v]
 klausur list [paths]
 klausur recover [--all | --discard <run-id>]   # post-v1
 klausur fmt  [paths]                           # post-v1
@@ -741,6 +782,8 @@ Also implemented:
 - `undo(|| …)` for cleanup in scripts
 - SSE parsing, and base64, JWT and regex helpers
 - CSS selectors over HTML and XML, and JSONPath
+- `where:` explanations of failed expectations
+- `parallel` tests and `-j N`
 
 See [GAPS.md](GAPS.md) for what testing a real service turned up.
 

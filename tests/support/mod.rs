@@ -14,6 +14,10 @@ pub struct State {
     pub users: HashMap<u64, Value>,
     pub flaky: HashMap<String, u32>,
     pub deletes: Vec<u64>,
+    /// `/hold`: requests in progress, how many ever started, and the most at once.
+    pub active: u32,
+    pub started: u32,
+    pub peak: u32,
 }
 
 pub struct Server {
@@ -27,16 +31,21 @@ pub fn start() -> Server {
     let state = Arc::new(Mutex::new(State::default()));
     let st = state.clone();
     std::thread::spawn(move || {
+        // One thread per request, so parallel tests can overlap.
         for mut req in server.incoming_requests() {
-            let mut body = String::new();
-            let _ = req.as_reader().read_to_string(&mut body);
-            let (status, value) = handle(&st, &req, &body);
-            let text = value.map(|v| v.to_string()).unwrap_or_default();
-            let mut response = tiny_http::Response::from_string(text).with_status_code(status);
-            response.add_header(
-                tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
-            );
-            let _ = req.respond(response);
+            let st = st.clone();
+            std::thread::spawn(move || {
+                let mut body = String::new();
+                let _ = req.as_reader().read_to_string(&mut body);
+                let (status, value) = handle(&st, &req, &body);
+                let text = value.map(|v| v.to_string()).unwrap_or_default();
+                let mut response =
+                    tiny_http::Response::from_string(text).with_status_code(status);
+                response.add_header(
+                    tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
+                );
+                let _ = req.respond(response);
+            });
         }
     });
     Server {
@@ -168,6 +177,21 @@ fn handle(state: &Mutex<State>, req: &tiny_http::Request, body: &str) -> (u16, O
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
             (200, Some(json!({"ready": true})))
+        }
+        // Held for `ms`; says whether another `/hold` ran at any point meanwhile.
+        ("GET", ["hold"]) => {
+            s.active += 1;
+            s.peak = s.peak.max(s.active);
+            let alone_at_start = s.active == 1;
+            let started = s.started;
+            s.started += 1;
+            drop(s);
+            let ms: u64 = query.get("ms").and_then(|m| m.parse().ok()).unwrap_or(200);
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            let mut s = state.lock().unwrap();
+            let overlapped = !alone_at_start || s.started != started + 1;
+            s.active -= 1;
+            (200, Some(json!({"overlapped": overlapped, "peak": s.peak})))
         }
         ("GET", ["slow"]) => {
             drop(s);

@@ -2,7 +2,7 @@
 
 pub mod generators;
 
-use crate::runtime::undo::{self, DirtyEntry, ScopeKind};
+use crate::runtime::undo::{self, DirtyReport, ScopeKind};
 use crate::runtime::value::{self, display, map_of};
 use crate::runtime::{CaseFrame, Ctx, CtxData, Failure, ScriptFn, Shared};
 use crate::source::FileId;
@@ -23,6 +23,7 @@ pub const BUILTIN_MODIFIERS: &[&str] = &[
     "tags",
     "skip",
     "only",
+    "parallel",
     "label",
     "before",
     "after",
@@ -83,6 +84,8 @@ pub struct DefData {
     pub timeout: Option<Duration>,
     pub skip: Option<String>,
     pub only: bool,
+    /// `parallel`: may run at the same time as other `parallel` tests.
+    pub parallel: bool,
     pub tags: Vec<String>,
 }
 
@@ -188,6 +191,7 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
         t.0.borrow_mut().skip = Some(value::display_plain(&reason))
     });
     engine.register_fn("only", |t: &mut TestDef| t.0.borrow_mut().only = true);
+    engine.register_fn("parallel", |t: &mut TestDef| t.0.borrow_mut().parallel = true);
     engine.register_fn("tags", |t: &mut TestDef, tags: Array| {
         t.0.borrow_mut()
             .tags
@@ -252,13 +256,27 @@ pub struct CaseResult {
     pub label: Option<String>,
     pub args: Vec<(String, String)>,
     pub outcome: Outcome,
-    pub dirty: Vec<DirtyEntry>,
+    pub dirty: Vec<DirtyReport>,
     pub duration: Duration,
     pub logs: Vec<String>,
     pub generated: bool,
 }
 
 impl CaseResult {
+    /// A test that couldn't run at all, e.g. because its modifiers failed.
+    pub fn error(test: String, failure: Failure) -> Self {
+        CaseResult {
+            test,
+            label: None,
+            args: Vec::new(),
+            outcome: Err(failure),
+            dirty: Vec::new(),
+            duration: Duration::ZERO,
+            logs: Vec::new(),
+            generated: false,
+        }
+    }
+
     /// `test [label]`, or `test [a=1, b={…}]` without a `label` modifier.
     pub fn label(&self) -> String {
         if let Some(label) = &self.label {
@@ -728,7 +746,7 @@ pub fn run_case(
             .map(|(k, v)| (k.clone(), display(v)))
             .collect(),
         outcome,
-        dirty,
+        dirty: dirty.iter().map(DirtyReport::from).collect(),
         duration: started.elapsed(),
         logs,
         generated: spec.generated,

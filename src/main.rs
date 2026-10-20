@@ -1,4 +1,5 @@
 mod diag;
+mod parallel;
 mod load;
 mod report;
 mod rewrite;
@@ -14,7 +15,9 @@ use report::{Reporter, render_failure};
 use rhai::{Dynamic, Map, Scope};
 use runtime::Config;
 use runtime::value::{self, display};
+use std::collections::{BTreeMap, HashMap};
 use std::io::{IsTerminal, Write};
+use std::rc::Rc;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -77,6 +80,9 @@ enum Command {
         /// Per-request timeout in seconds.
         #[arg(long, value_name = "SECS", default_value_t = 30)]
         timeout: u64,
+        /// How many tests marked `parallel` run at once. Other tests always run alone.
+        #[arg(short, long, value_name = "N", default_value_t = 4)]
+        jobs: usize,
     },
     /// List requests, functions and tests.
     List {
@@ -132,6 +138,7 @@ fn main() -> ExitCode {
             env,
             verbose,
             timeout,
+            jobs,
         } => test(
             targets,
             seed,
@@ -141,6 +148,7 @@ fn main() -> ExitCode {
             env,
             verbose,
             timeout,
+            jobs.max(1),
             interrupted,
         ),
         Command::List { paths } => list(&paths),
@@ -331,8 +339,9 @@ fn run(
         let entries: Vec<_> = state
             .orphan_dirty
             .iter()
-            .map(|d| (String::new(), 0, d))
+            .map(|d| (String::new(), 0, runtime::undo::DirtyReport::from(d)))
             .collect();
+        let entries: Vec<_> = entries.iter().map(|(c, s, d)| (c.clone(), *s, d)).collect();
         eprint!("{}", report::render_dirty(&entries, &shared.sources));
         code = 3;
     }
@@ -412,6 +421,7 @@ fn test(
     env: Option<String>,
     verbose: bool,
     timeout: u64,
+    jobs: usize,
     interrupted: Arc<AtomicBool>,
 ) -> i32 {
     let (paths, filters): (Vec<String>, Vec<String>) =
@@ -444,7 +454,7 @@ fn test(
         interrupted: interrupted.clone(),
         seed,
     };
-    let program = match load_or_report(&paths, opts) {
+    let program = match load_or_report(&paths, opts.clone()) {
         Ok(p) => p,
         Err(code) => return code,
     };
@@ -476,19 +486,24 @@ fn test(
         println!("{}", yellow("no tests match the filter"));
         return 0;
     }
-    'tests: for (test, def) in selected {
+    // Plan the run in declaration order. Cases of `parallel` tests go to worker threads;
+    // every other case waits until no worker is busy and runs alone on this thread.
+    let mut steps: Vec<Step> = Vec::new();
+    for (test, def) in selected {
         let file = shared.sources.get(test.file).name.clone();
-        if interrupted.load(Ordering::SeqCst) {
-            reporter.summary.interrupted = true;
-            break;
-        }
+        let test_idx = program
+            .tests
+            .iter()
+            .position(|t| Rc::ptr_eq(t, &test))
+            .unwrap_or(0);
         let def = match def {
             Ok(d) => d,
             Err(f) => {
-                reporter.test_error(&file, &test.name, f);
+                steps.push(Step::Error(file, test.name.clone(), f));
                 continue;
             }
         };
+        let test_def = def.clone();
         let def = def.0.borrow();
         if any_only && !def.only {
             continue;
@@ -497,19 +512,19 @@ fn test(
             continue;
         }
         if let Some(reason) = &def.skip {
-            reporter.skipped(&file, &test.name, reason);
+            steps.push(Step::Skipped(file, test.name.clone(), reason.clone()));
             continue;
         }
         let cases = match testing::expand_cases(shared, engine, &test, &def, seed) {
             Ok(c) => c,
             Err(f) => {
-                reporter.test_error(&file, &test.name, f);
+                steps.push(Step::Error(file, test.name.clone(), f));
                 continue;
             }
         };
         let total = cases.len();
         let mut ran = 0;
-        for case in cases {
+        for (case_idx, case) in cases.into_iter().enumerate() {
             let matches = case_filters.iter().all(|(raw, kv)| {
                 case.label.as_deref() == Some(raw.as_str())
                     || kv.as_ref().is_some_and(|(k, v)| {
@@ -521,28 +536,181 @@ fn test(
             if !matches {
                 continue;
             }
-            if interrupted.load(Ordering::SeqCst) {
-                reporter.summary.interrupted = true;
-                break 'tests;
-            }
             ran += 1;
-            let result = testing::run_case(shared, engine, &test, &def, case);
-            let dirty = !result.dirty.is_empty();
-            reporter.case(&file, result);
-            if dirty && on_dirty == OnDirty::Abort {
-                reporter.summary.stopped_dirty = true;
-                break 'tests;
-            }
+            steps.push(Step::Case {
+                file: file.clone(),
+                test: test.clone(),
+                test_idx,
+                case_idx,
+                parallel: def.parallel && jobs > 1,
+                def: test_def.clone(),
+                spec: Some(case),
+            });
         }
         if ran == 0 && total > 0 {
-            reporter.skipped(&file, &test.name, "no case matches --case");
+            steps.push(Step::Skipped(
+                file,
+                test.name.clone(),
+                "no case matches --case".into(),
+            ));
         }
     }
+
+    let pool = steps
+        .iter()
+        .any(|s| matches!(s, Step::Case { parallel: true, .. }))
+        .then(|| parallel::Pool::start(jobs, &paths, opts.clone()));
+    let mut run = Schedule {
+        pool,
+        reporter: &mut reporter,
+        stop_on_dirty: on_dirty == OnDirty::Abort,
+        done: BTreeMap::new(),
+        files: HashMap::new(),
+        next: 0,
+        in_flight: 0,
+        stopped: false,
+    };
+    for (seq, step) in steps.into_iter().enumerate() {
+        if run.stopped || interrupted.load(Ordering::SeqCst) {
+            break;
+        }
+        match step {
+            Step::Skipped(file, name, reason) => run.finish(seq, Done::Skipped(file, name, reason)),
+            Step::Error(file, name, f) => run.finish(seq, Done::Error(file, name, f)),
+            Step::Case {
+                file,
+                test_idx,
+                case_idx,
+                parallel: true,
+                ..
+            } => {
+                while run.in_flight >= jobs {
+                    run.receive();
+                }
+                run.send(seq, file, test_idx, case_idx);
+            }
+            Step::Case {
+                file,
+                test,
+                def,
+                spec,
+                ..
+            } => {
+                while run.in_flight > 0 {
+                    run.receive();
+                }
+                if run.stopped || interrupted.load(Ordering::SeqCst) {
+                    break;
+                }
+                let spec = spec.expect("serial cases keep their spec");
+                let result = testing::run_case(shared, engine, &test, &def.0.borrow(), spec);
+                run.finish(seq, Done::Case(file, result));
+            }
+        }
+    }
+    while run.in_flight > 0 {
+        run.receive();
+    }
+    run.end();
     if interrupted.load(Ordering::SeqCst) {
         reporter.summary.interrupted = true;
     }
     reporter.finish(started.elapsed());
     reporter.summary.exit_code()
+}
+
+/// One planned entry of a test run.
+enum Step {
+    Skipped(String, String, String),
+    Error(String, String, runtime::Failure),
+    Case {
+        file: String,
+        test: Rc<testing::TestRt>,
+        test_idx: usize,
+        case_idx: usize,
+        parallel: bool,
+        def: testing::TestDef,
+        /// The case itself, for running it on this thread.
+        spec: Option<testing::CaseSpec>,
+    },
+}
+
+/// A finished step, waiting for the steps before it to be printed.
+enum Done {
+    Skipped(String, String, String),
+    Error(String, String, runtime::Failure),
+    Case(String, testing::CaseResult),
+}
+
+fn report_done(reporter: &mut Reporter, d: Done) {
+    match d {
+        Done::Skipped(file, name, reason) => reporter.skipped(&file, &name, &reason),
+        Done::Error(file, name, f) => reporter.test_error(&file, &name, f),
+        Done::Case(file, r) => reporter.case(&file, r),
+    }
+}
+
+/// Runs planned steps: `parallel` cases on the worker pool, everything else on this thread,
+/// and prints results in declaration order.
+struct Schedule<'r, 'a> {
+    pool: Option<parallel::Pool>,
+    reporter: &'r mut Reporter<'a>,
+    stop_on_dirty: bool,
+    /// Finished steps that wait for earlier ones before they're printed.
+    done: BTreeMap<usize, Done>,
+    /// The file of each case on the pool.
+    files: HashMap<usize, String>,
+    next: usize,
+    in_flight: usize,
+    stopped: bool,
+}
+
+impl Schedule<'_, '_> {
+    fn send(&mut self, seq: usize, file: String, test: usize, case: usize) {
+        if let Some(pool) = &self.pool {
+            self.files.insert(seq, file);
+            pool.send(parallel::Job { seq, test, case });
+            self.in_flight += 1;
+        }
+    }
+
+    /// Wait for one case on the pool to finish.
+    fn receive(&mut self) {
+        let Some((seq, result)) = self.pool.as_ref().and_then(|p| p.recv()) else {
+            self.in_flight = 0;
+            return;
+        };
+        self.in_flight -= 1;
+        let file = self.files.remove(&seq).unwrap_or_default();
+        self.finish(seq, Done::Case(file, result));
+    }
+
+    /// Record a finished step and print whatever is ready. A dirty case stops the run unless
+    /// `--on-dirty=continue`; cases already on the pool still finish.
+    fn finish(&mut self, seq: usize, d: Done) {
+        if let Done::Case(_, r) = &d
+            && !r.dirty.is_empty()
+            && self.stop_on_dirty
+        {
+            self.stopped = true;
+        }
+        self.done.insert(seq, d);
+        while let Some(d) = self.done.remove(&self.next) {
+            report_done(self.reporter, d);
+            self.next += 1;
+        }
+    }
+
+    /// Print what finished after a gap left by steps that never ran.
+    fn end(mut self) {
+        self.pool = None;
+        for (_, d) in std::mem::take(&mut self.done) {
+            report_done(self.reporter, d);
+        }
+        if self.stopped {
+            self.reporter.summary.stopped_dirty = true;
+        }
+    }
 }
 
 fn print_listing(program: &Program, only_file: Option<usize>) {

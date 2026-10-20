@@ -185,6 +185,17 @@ fn timed_out(
     f.into_err()
 }
 
+/// A `-v` trace line: on stderr, or in the case's log for tests on worker threads.
+fn trace(shared: &Shared, line: String) {
+    if !shared.config.trace {
+        return;
+    }
+    match shared.current_case().filter(|_| shared.config.trace_in_log) {
+        Some(case) => case.ctx.0.borrow_mut().logs.push(line.trim_start().to_string()),
+        None => eprintln!("{line}"),
+    }
+}
+
 const POLL_EVERY: Duration = Duration::from_secs(1);
 const POLL_WITHIN: Duration = Duration::from_secs(60);
 
@@ -456,14 +467,15 @@ pub fn perform(
     };
     let timeout =
         check_limits(shared, own_timeout).map_err(|f| fail_with(f, &exchange, body.span))?;
-    if shared.config.trace {
-        eprintln!(
+    trace(
+        shared,
+        format!(
             "  {} {} {}",
             style::dim("→"),
             style::bold(&prepared.method),
             prepared.url
-        );
-    }
+        ),
+    );
     let started = Instant::now();
     let received = match http::send(&shared.agent, &prepared, timeout) {
         Ok(r) => r,
@@ -476,9 +488,7 @@ pub fn perform(
             }
             exchange.error = Some(e.message.clone());
             exchange.duration = Some(started.elapsed());
-            if shared.config.trace {
-                eprintln!("  {} {}", style::red("✗"), style::red(&e.message));
-            }
+            trace(shared, format!("  {} {}", style::red("✗"), style::red(&e.message)));
             let message = if e.timed_out {
                 format!("timed out after {}", crate::testing::humantime(timeout))
             } else {
@@ -503,10 +513,13 @@ pub fn perform(
         } else {
             style::red(status)
         };
-        eprintln!(
-            "  {} {status} {}",
-            style::dim("←"),
-            style::dim(format!("({} ms)", received.duration.as_millis()))
+        trace(
+            shared,
+            format!(
+                "  {} {status} {}",
+                style::dim("←"),
+                style::dim(format!("({} ms)", received.duration.as_millis()))
+            ),
         );
     }
     let result = response_map(&prepared, &received);

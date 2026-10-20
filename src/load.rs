@@ -40,6 +40,7 @@ pub struct LoadError {
     pub diags: Vec<Diag>,
 }
 
+#[derive(Clone)]
 pub struct LoadOptions {
     pub config: Config,
     pub env_name: Option<String>,

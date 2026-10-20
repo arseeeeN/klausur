@@ -1,6 +1,7 @@
 //! Runtime: shared state, compiled units, failures and error mapping.
 
 pub mod builtins;
+pub mod explain;
 pub mod query;
 pub mod engine;
 pub mod http;
@@ -35,9 +36,12 @@ pub struct GlobalVar {
     pub evaluating: bool,
 }
 
+#[derive(Clone)]
 pub struct Config {
     /// Print every request and response summary as it happens.
     pub trace: bool,
+    /// Put the trace into the running case's log instead, for tests on worker threads.
+    pub trace_in_log: bool,
     pub request_timeout: Duration,
     pub undo_attempts: u32,
     pub undo_backoff: Duration,
@@ -47,6 +51,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             trace: false,
+            trace_in_log: false,
             request_timeout: Duration::from_secs(30),
             undo_attempts: 3,
             undo_backoff: Duration::from_millis(250),
@@ -265,8 +270,8 @@ impl Shared {
                     } else {
                         trace.extend(here);
                     }
-                    trace.extend(std::mem::take(&mut f.trace));
-                    f.trace = trace;
+                    trace.extend(f.trace.iter().copied());
+                    f.trace = trace.into();
                     return f;
                 }
                 EvalAltResult::ErrorTerminated(token, pos) => {
@@ -277,13 +282,13 @@ impl Shared {
                             .unwrap_or_else(|_| "terminated".into()),
                     );
                     f.span = self.map_pos(&source, *pos);
-                    f.trace = trace;
+                    f.trace = trace.into();
                     return f;
                 }
                 other => {
                     let mut f = Failure::new(self.rhai_message(other));
                     f.span = self.map_pos(&source, other.position());
-                    f.trace = trace;
+                    f.trace = trace.into();
                     return f;
                 }
             }
@@ -379,9 +384,11 @@ pub struct Failure {
     pub span: Option<Span>,
     /// Labelled values, e.g. the two sides of a failed comparison.
     pub details: Vec<(String, String)>,
+    /// The values of the parts of a failed expectation, shown below the source.
+    pub values: Box<[(String, String)]>,
     pub exchange: Option<Box<Exchange>>,
     /// Call sites leading to the failure, outermost first.
-    pub trace: Vec<Span>,
+    pub trace: Box<[Span]>,
 }
 
 impl Failure {
@@ -390,8 +397,9 @@ impl Failure {
             message: message.into(),
             span: None,
             details: Vec::new(),
+            values: Box::default(),
             exchange: None,
-            trace: Vec::new(),
+            trace: Box::default(),
         }
     }
 

@@ -1,5 +1,6 @@
 //! Building the Rhai engine: custom syntax, globals, built-in functions and requests.
 
+use super::explain;
 use super::request::{self, Args, RequestRt};
 use super::undo::{self, ScopeKind};
 use super::value::{self, RawText, TYPE_NAMES, TypeTag, display, type_matches, type_name};
@@ -93,8 +94,9 @@ fn check(
         Expr::FnCall(call, pos)
             if call.args.len() == 2 && comparisons.contains_key(call.name.as_str()) =>
         {
-            let left = ctx.eval_expression_tree(&Expression::from(&call.args[0]))?;
-            let right = ctx.eval_expression_tree(&Expression::from(&call.args[1]))?;
+            let mut rec = explain::Recorded::default();
+            let left = explain::eval(ctx, &call.args[0], &mut rec)?;
+            let right = explain::eval(ctx, &call.args[1], &mut rec)?;
             let len = ctx.scope().len();
             ctx.scope_mut()
                 .push_dynamic("__l", left.clone())
@@ -114,6 +116,7 @@ fn check(
             };
             f.details.push(("left".into(), l));
             f.details.push(("right".into(), r));
+            f.values = rec.0.into();
             Ok(Some((f, start_of(&call.args[0], *pos))))
         }
         Expr::FnCall(call, pos) if call.args.len() == 2 && call.name == "is" => {
@@ -132,13 +135,15 @@ fn check(
             Ok(Some((f, start_of(&call.args[0], *pos))))
         }
         _ => {
-            let v = ctx.eval_expression_tree(&Expression::from(expr))?;
+            let mut rec = explain::Recorded::default();
+            let v = explain::eval(ctx, expr, &mut rec)?;
             match v.as_bool() {
                 Ok(true) => Ok(None),
-                Ok(false) => Ok(Some((
-                    Failure::new("expectation failed: the expression is false"),
-                    expr.position(),
-                ))),
+                Ok(false) => {
+                    let mut f = Failure::new("expectation failed: the expression is false");
+                    f.values = rec.0.into();
+                    Ok(Some((f, start_of(expr, expr.position()))))
+                }
                 Err(_) => Ok(Some((
                     Failure::new(format!(
                         "an expectation must be a boolean, got {} {}",
@@ -157,7 +162,7 @@ fn start_of(expr: &Expr, fallback: Position) -> Position {
     let mut e = expr;
     loop {
         match e {
-            Expr::FnCall(call, _) if call.op_token.is_some() && !call.args.is_empty() => {
+            Expr::FnCall(call, _) if call.op_token.is_some() && call.args.len() == 2 => {
                 e = &call.args[0]
             }
             Expr::Dot(x, ..) | Expr::Index(x, ..) => e = &x.lhs,

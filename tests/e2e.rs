@@ -1136,3 +1136,112 @@ test "bad path" { json_path(#{}, "$[") }
         assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
     }
 }
+
+#[test]
+fn expectations_explain_their_parts() {
+    let server = start();
+    let p = project(
+        "explain",
+        r##"
+@job(key) {
+    connection { GET {{base}}/jobs/{{key}}?after=100 }
+}
+
+test "parts are evaluated once" {
+    // Each call counts a poll, so evaluating a part twice would show up here.
+    expect job("once").body.polls == 1
+    expect job("once").body.polls.to_string().contains("2")
+    expect !job("once").body.state.contains("done") && job("once").body.polls == 4
+}
+test "not contains" {
+    let urls = ["klausur://a", "klausur://b"]
+    let ignored = "klausur://b"
+    expect !urls.contains(ignored)
+}
+test "all and some" {
+    let words = ["guest", "password", "OTTER"]
+    let content = "Visit OTTER-GUEST"
+    expect words.all(|w| content.contains(w))
+}
+test "some" { expect ![1, "SECRET-1", "ok"].some(|v| v is string && v.contains("SECRET")) }
+test "property" {
+    let hit = #{ ready: false, id: 7 }
+    expect hit.ready
+}
+test "request in a chain" { expect job("chain").body.state == "done" }
+"##,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ parts are evaluated once",
+        "where:",
+        r#"urls = ["klausur://a","klausur://b"]"#,
+        r#"ignored = "klausur://b""#,
+        r#"words.all(…) fails for = ["guest","password"]"#,
+        r#"[1, "SECRET-1", "ok"].some(…) holds for = ["SECRET-1"]"#,
+        r#"hit = {"id":7,"ready":false}"#,
+        r#"left: "pending", right: "done""#,
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+}
+
+#[test]
+fn parallel_tests() {
+    let server = start();
+    let p = Project::new("parallel");
+    p.file("users.kl", USERS);
+    p.file(
+        "p.test.kl",
+        r#"
+import "users.kl"
+
+@hold(ms = 300) {
+    connection { GET {{base}}/hold?ms={{ms}} }
+    expect status == 200
+}
+
+test "a" parallel { hold() }
+test "b" parallel rollback { createUser(name: "par"); hold() }
+test "c" (n in 1..=3) parallel { hold() }
+test "alone" { expect !hold().body.overlapped }
+test "d" parallel { hold() }
+test "e" parallel { expect hold().body.overlapped && hold(ms: 10).body.peak == 9 }
+"#,
+    );
+    let started = std::time::Instant::now();
+    let out = p.run(&server, &["test", "-j", "4", "-v"]);
+    let took = started.elapsed();
+    assert_eq!(out.code, 1, "{}", out.all());
+    // 5 overlapping holds, one alone, then 2 more: ~1.2 s, not the 2.7 s of a serial run.
+    assert!(took < std::time::Duration::from_millis(2200), "{took:?}\n{}", out.all());
+    let order: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("✓ ").or(l.trim_start().strip_prefix("✗ ")))
+        .map(|l| l.split(" (").next().unwrap())
+        .collect();
+    assert_eq!(
+        order,
+        ["a", "b", "c [n=1]", "c [n=2]", "c [n=3]", "alone", "d", "e"],
+        "{}",
+        out.all()
+    );
+    for line in [
+        "✓ alone",
+        "✗ e",
+        // Failures from workers keep their source location and values.
+        "p.test.kl:14",
+        "left: 4, right: 9",
+        // `-v` traces from workers go into the case's log.
+        "→ GET",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+    assert!(server.state.lock().unwrap().users.is_empty(), "{}", out.all());
+
+    // Without `-j`, or with `-j 1`, nothing overlaps.
+    let out = p.run(&server, &["test", "-j", "1", "alone"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+}
