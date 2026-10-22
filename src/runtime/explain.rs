@@ -8,8 +8,8 @@
 
 use super::value::{self, TypeTag, display};
 use rhai::{
-    ASTFlags, Array, BinaryExpr, Dynamic, EvalAltResult, EvalContext, Expr, Expression,
-    FnCallExpr, FnPtr, Position, Stmt,
+    ASTFlags, Array, BinaryExpr, Dynamic, EvalAltResult, EvalContext, Expr, Expression, FnCallExpr,
+    FnPtr, Position, Stmt,
 };
 
 type R<T> = Result<T, Box<EvalAltResult>>;
@@ -131,9 +131,7 @@ fn interesting(e: &Expr) -> bool {
 fn is_closure(e: &Expr) -> bool {
     match e {
         Expr::DynamicConstant(v, _) => v.is::<FnPtr>(),
-        Expr::FnCall(call, _) => {
-            call.name == "curry" && call.args.first().is_some_and(is_closure)
-        }
+        Expr::FnCall(call, _) => call.name == "curry" && call.args.first().is_some_and(is_closure),
         _ => false,
     }
 }
@@ -197,7 +195,11 @@ fn after_index<'a>(r: &'a Expr, flags: ASTFlags, pos: Position, out: &mut Vec<Se
 }
 
 fn dot(lhs: Expr, rhs: Expr, flags: ASTFlags, pos: Position) -> Expr {
-    Expr::Dot(Box::new(BinaryExpr { lhs, rhs }), flags & !ASTFlags::BREAK, pos)
+    Expr::Dot(
+        Box::new(BinaryExpr { lhs, rhs }),
+        flags & !ASTFlags::BREAK,
+        pos,
+    )
 }
 
 fn chain(ctx: &mut EvalContext, expr: &Expr, rec: &mut Recorded) -> R<Dynamic> {
@@ -256,8 +258,15 @@ fn chain(ctx: &mut EvalContext, expr: &Expr, rec: &mut Recorded) -> R<Dynamic> {
                     (*flags & ASTFlags::NEGATED) | ASTFlags::BREAK,
                     *pos,
                 );
-                let q = if flags.intersects(ASTFlags::NEGATED) { "?" } else { "" };
-                (run(ctx, &e, vec![cur.clone(), iv])?, format!("{q}[{}]", render(index)))
+                let q = if flags.intersects(ASTFlags::NEGATED) {
+                    "?"
+                } else {
+                    ""
+                };
+                (
+                    run(ctx, &e, vec![cur.clone(), iv])?,
+                    format!("{q}[{}]", render(index)),
+                )
             }
         };
         cur = next;
@@ -267,7 +276,11 @@ fn chain(ctx: &mut EvalContext, expr: &Expr, rec: &mut Recorded) -> R<Dynamic> {
 }
 
 fn link(flags: ASTFlags) -> &'static str {
-    if flags.intersects(ASTFlags::NEGATED) { "?." } else { "." }
+    if flags.intersects(ASTFlags::NEGATED) {
+        "?."
+    } else {
+        "."
+    }
 }
 
 /// `xs.all(f)` and `xs.some(f)`: call the predicate on every element and record which ones
@@ -355,7 +368,11 @@ pub fn render(e: &Expr) -> String {
                             s.push_str(&render(p));
                         }
                         Seg::Index(i, f, _) => {
-                            let q = if f.intersects(ASTFlags::NEGATED) { "?" } else { "" };
+                            let q = if f.intersects(ASTFlags::NEGATED) {
+                                "?"
+                            } else {
+                                ""
+                            };
                             s.push_str(&format!("{q}[{}]", render(i)));
                         }
                     }
@@ -418,7 +435,11 @@ fn render_call(c: &FnCallExpr) -> String {
         let args: Vec<String> = positional
             .iter()
             .map(|(_, v)| render(v))
-            .chain(named.iter().map(|(k, v)| format!("{}: {}", k.name, render(v))))
+            .chain(
+                named
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k.name, render(v))),
+            )
             .collect();
         return format!("{name}({})", args.join(", "));
     }

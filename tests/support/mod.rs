@@ -39,8 +39,7 @@ pub fn start() -> Server {
                 let _ = req.as_reader().read_to_string(&mut body);
                 let (status, value) = handle(&st, &req, &body);
                 let text = value.map(|v| v.to_string()).unwrap_or_default();
-                let mut response =
-                    tiny_http::Response::from_string(text).with_status_code(status);
+                let mut response = tiny_http::Response::from_string(text).with_status_code(status);
                 response.add_header(
                     tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
                 );

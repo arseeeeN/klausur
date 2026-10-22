@@ -1,6 +1,6 @@
 mod diag;
-mod parallel;
 mod load;
+mod parallel;
 mod report;
 mod rewrite;
 mod runtime;
@@ -17,9 +17,9 @@ use runtime::Config;
 use runtime::value::{self, display};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{IsTerminal, Write};
-use std::rc::Rc;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;

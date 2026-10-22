@@ -17,13 +17,17 @@ use selectors::{Element, OpaqueElement};
 type R<T> = Result<T, Box<EvalAltResult>>;
 
 pub fn register(engine: &mut Engine) {
-    engine.register_fn("html_select", |html: &str, css: &str| html_select(html, css));
+    engine.register_fn("html_select", |html: &str, css: &str| {
+        html_select(html, css)
+    });
     engine.register_fn("html_text", |html: &str| {
         let doc = Html::parse_document(html);
         collapse(&html_text(doc.root_element()))
     });
     engine.register_fn("xml_select", |xml: &str, css: &str| xml_select(xml, css));
-    engine.register_fn("json_path", |value: Dynamic, path: &str| json_path(&value, path));
+    engine.register_fn("json_path", |value: Dynamic, path: &str| {
+        json_path(&value, path)
+    });
 }
 
 fn fail(message: String) -> Box<EvalAltResult> {
@@ -66,9 +70,40 @@ const HIDDEN: &[&str] = &["script", "style", "noscript", "template", "head"];
 
 /// Elements that start a new line of text, so `<p>a</p><p>b</p>` reads "a b", not "ab".
 const BLOCKS: &[&str] = &[
-    "address", "article", "aside", "blockquote", "br", "dd", "div", "dl", "dt", "figcaption",
-    "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main",
-    "nav", "ol", "p", "pre", "section", "table", "td", "th", "title", "tr", "ul",
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "br",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "td",
+    "th",
+    "title",
+    "tr",
+    "ul",
 ];
 
 fn html_text(element: ElementRef) -> String {
@@ -142,7 +177,10 @@ impl std::fmt::Debug for XmlEl<'_, '_> {
 
 impl<'a, 'input> XmlEl<'a, 'input> {
     fn wrap(&self, node: Option<roxmltree::Node<'a, 'input>>) -> Option<Self> {
-        node.map(|node| XmlEl { node, ids: self.ids })
+        node.map(|node| XmlEl {
+            node,
+            ids: self.ids,
+        })
     }
 }
 
@@ -301,7 +339,12 @@ fn json_path(value: &Dynamic, path: &str) -> R<Array> {
     let query = serde_json_path::JsonPath::parse(&full)
         .map_err(|e| fail(format!("`{path}` isn't a valid JSONPath: {e}")))?;
     let json = to_json(value).map_err(fail)?;
-    Ok(query.query(&json).all().into_iter().map(from_json).collect())
+    Ok(query
+        .query(&json)
+        .all()
+        .into_iter()
+        .map(from_json)
+        .collect())
 }
 
 #[cfg(test)]
@@ -323,10 +366,18 @@ mod tests {
         let found = html_select(html, "main p").unwrap();
         assert_eq!(tags(&found, "text"), ["One bold", "Two"]);
         assert_eq!(tags(&html_select(html, "p.a b").unwrap(), "tag"), ["b"]);
-        let link = html_select(html, "a[href^='/']").unwrap()[0].clone().cast::<Map>();
-        assert_eq!(link["attrs"].clone().cast::<Map>()["href"].to_string(), "/next");
+        let link = html_select(html, "a[href^='/']").unwrap()[0]
+            .clone()
+            .cast::<Map>();
+        assert_eq!(
+            link["attrs"].clone().cast::<Map>()["href"].to_string(),
+            "/next"
+        );
         let doc = Html::parse_document(html);
-        assert_eq!(collapse(&html_text(doc.root_element())), "One bold Two next");
+        assert_eq!(
+            collapse(&html_text(doc.root_element())),
+            "One bold Two next"
+        );
         assert!(html_select(html, "p[").is_err());
     }
 
@@ -337,9 +388,18 @@ mod tests {
               <entry id="1"><title>First</title><link href="/1"/></entry>
               <entry id="2"><x:title>Second</x:title><x:link x:href="/2"/></entry>
             </feed>"#;
-        assert_eq!(tags(&xml_select(xml, "entry > title").unwrap(), "text"), ["First", "Second"]);
-        assert_eq!(tags(&xml_select(xml, "link[href='/2']").unwrap(), "tag"), ["link"]);
-        assert_eq!(tags(&xml_select(xml, "[id='2'] title").unwrap(), "xml"), ["<x:title>Second</x:title>"]);
+        assert_eq!(
+            tags(&xml_select(xml, "entry > title").unwrap(), "text"),
+            ["First", "Second"]
+        );
+        assert_eq!(
+            tags(&xml_select(xml, "link[href='/2']").unwrap(), "tag"),
+            ["link"]
+        );
+        assert_eq!(
+            tags(&xml_select(xml, "[id='2'] title").unwrap(), "xml"),
+            ["<x:title>Second</x:title>"]
+        );
         assert_eq!(xml_select(xml, "entry:nth-child(2)").unwrap().len(), 1);
         assert_eq!(xml_select(xml, "link:empty").unwrap().len(), 2);
         assert!(xml_select("<a>", "a").is_err());

@@ -191,7 +191,12 @@ fn trace(shared: &Shared, line: String) {
         return;
     }
     match shared.current_case().filter(|_| shared.config.trace_in_log) {
-        Some(case) => case.ctx.0.borrow_mut().logs.push(line.trim_start().to_string()),
+        Some(case) => case
+            .ctx
+            .0
+            .borrow_mut()
+            .logs
+            .push(line.trim_start().to_string()),
         None => eprintln!("{line}"),
     }
 }
@@ -488,7 +493,10 @@ pub fn perform(
             }
             exchange.error = Some(e.message.clone());
             exchange.duration = Some(started.elapsed());
-            trace(shared, format!("  {} {}", style::red("✗"), style::red(&e.message)));
+            trace(
+                shared,
+                format!("  {} {}", style::red("✗"), style::red(&e.message)),
+            );
             let message = if e.timed_out {
                 format!("timed out after {}", crate::testing::humantime(timeout))
             } else {

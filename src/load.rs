@@ -673,8 +673,9 @@ impl Compiler<'_> {
                 continue;
             };
             let Some(i) = ARGS.iter().position(|a| *a == arg) else {
-                let mut d = Diag::at(arg_span, format!("`poll` has no argument `{arg}`"))
-                    .help("`poll` takes `until`, `every` and `within`, or `while`, `every` and `for`");
+                let mut d = Diag::at(arg_span, format!("`poll` has no argument `{arg}`")).help(
+                    "`poll` takes `until`, `every` and `within`, or `while`, `every` and `for`",
+                );
                 if let Some(s) = suggest(arg, ARGS) {
                     d = d.help(format!("did you mean `{s}`?"));
                 }
@@ -703,8 +704,11 @@ impl Compiler<'_> {
         let (mode, cond, limit) = match (until, while_) {
             (Some(_), Some(_)) => {
                 self.diags.push(
-                    Diag::at(spans[1].unwrap_or(m), "`poll` takes `until` or `while`, not both")
-                        .help("`until` waits for a condition, `while` checks that one keeps holding"),
+                    Diag::at(
+                        spans[1].unwrap_or(m),
+                        "`poll` takes `until` or `while`, not both",
+                    )
+                    .help("`until` waits for a condition, `while` checks that one keeps holding"),
                 );
                 return None;
             }
@@ -730,16 +734,20 @@ impl Compiler<'_> {
             (None, Some(cond)) => {
                 if let Some(span) = spans[3] {
                     self.diags.push(
-                        Diag::at(span, "`within` goes with `until`; `while` has `for`")
-                            .help("`poll(while: …, for: \"10s\")` keeps checking for the whole time"),
+                        Diag::at(span, "`within` goes with `until`; `while` has `for`").help(
+                            "`poll(while: …, for: \"10s\")` keeps checking for the whole time",
+                        ),
                     );
                     return None;
                 }
                 if for_.is_none() {
                     if ok {
                         self.diags.push(
-                            Diag::at(m, "`poll(while: …)` needs `for`, how long the condition must hold")
-                                .help("e.g. `poll(while: body.total == 0, for: \"10s\")`"),
+                            Diag::at(
+                                m,
+                                "`poll(while: …)` needs `for`, how long the condition must hold",
+                            )
+                            .help("e.g. `poll(while: body.total == 0, for: \"10s\")`"),
                         );
                     }
                     return None;

@@ -195,11 +195,7 @@ pub fn render_dirty(entries: &[(String, u64, &DirtyReport)], sources: &Sources) 
         }
         out.push_str(&format!("    {} {}\n", dim("created by:"), e.origin));
         if !e.captures.is_empty() {
-            let caps: Vec<String> = e
-                .captures
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect();
+            let caps: Vec<String> = e.captures.iter().map(|(k, v)| format!("{k}={v}")).collect();
             out.push_str(&format!("    {} {}\n", dim("captures:"), caps.join(", ")));
         }
         for (i, a) in e.attempts.iter().enumerate() {

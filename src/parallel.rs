@@ -94,21 +94,19 @@ fn worker(
         };
         let result = match &program {
             Some(program) => {
-                std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    run(program, &mut tests, &job, seed)
-                }))
-                .unwrap_or_else(|panic| {
-                    let why = panic
-                        .downcast_ref::<String>()
-                        .cloned()
-                        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
-                        .unwrap_or_default();
-                    failed(
-                        program,
-                        job.test,
-                        Failure::new(format!("klausur crashed running this case: {why}")),
-                    )
-                })
+                std::panic::catch_unwind(AssertUnwindSafe(|| run(program, &mut tests, &job, seed)))
+                    .unwrap_or_else(|panic| {
+                        let why = panic
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                            .unwrap_or_default();
+                        failed(
+                            program,
+                            job.test,
+                            Failure::new(format!("klausur crashed running this case: {why}")),
+                        )
+                    })
             }
             None => CaseResult::error(
                 String::new(),

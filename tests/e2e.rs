@@ -1215,11 +1215,19 @@ test "e" parallel { expect hold().body.overlapped && hold(ms: 10).body.peak == 9
     let took = started.elapsed();
     assert_eq!(out.code, 1, "{}", out.all());
     // 5 overlapping holds, one alone, then 2 more: ~1.2 s, not the 2.7 s of a serial run.
-    assert!(took < std::time::Duration::from_millis(2200), "{took:?}\n{}", out.all());
+    assert!(
+        took < std::time::Duration::from_millis(2200),
+        "{took:?}\n{}",
+        out.all()
+    );
     let order: Vec<&str> = out
         .stdout
         .lines()
-        .filter_map(|l| l.trim_start().strip_prefix("✓ ").or(l.trim_start().strip_prefix("✗ ")))
+        .filter_map(|l| {
+            l.trim_start()
+                .strip_prefix("✓ ")
+                .or(l.trim_start().strip_prefix("✗ "))
+        })
         .map(|l| l.split(" (").next().unwrap())
         .collect();
     assert_eq!(
@@ -1239,7 +1247,11 @@ test "e" parallel { expect hold().body.overlapped && hold(ms: 10).body.peak == 9
     ] {
         assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
     }
-    assert!(server.state.lock().unwrap().users.is_empty(), "{}", out.all());
+    assert!(
+        server.state.lock().unwrap().users.is_empty(),
+        "{}",
+        out.all()
+    );
 
     // Without `-j`, or with `-j 1`, nothing overlaps.
     let out = p.run(&server, &["test", "-j", "1", "alone"]);

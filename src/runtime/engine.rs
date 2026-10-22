@@ -279,10 +279,18 @@ pub fn log(shared: &Shared, text: String) {
 fn register_types(engine: &mut Engine, shared: &Rc<Shared>) {
     // `print(m)` and `${m}` show maps and arrays as JSON, the same as `log` does.
     engine
-        .register_fn("to_string", |m: &mut Map| value::display(&Dynamic::from(m.clone())))
-        .register_fn("to_string", |a: &mut Array| value::display(&Dynamic::from(a.clone())))
-        .register_fn("print", |m: &mut Map| value::display(&Dynamic::from(m.clone())))
-        .register_fn("print", |a: &mut Array| value::display(&Dynamic::from(a.clone())));
+        .register_fn("to_string", |m: &mut Map| {
+            value::display(&Dynamic::from(m.clone()))
+        })
+        .register_fn("to_string", |a: &mut Array| {
+            value::display(&Dynamic::from(a.clone()))
+        })
+        .register_fn("print", |m: &mut Map| {
+            value::display(&Dynamic::from(m.clone()))
+        })
+        .register_fn("print", |a: &mut Array| {
+            value::display(&Dynamic::from(a.clone()))
+        });
     engine
         .register_type_with_name::<Failure>("Failure")
         .register_get("message", |f: &mut Failure| f.message.clone())
