@@ -60,9 +60,16 @@ impl Sources {
 }
 
 pub fn display_path(path: &Path) -> String {
+    // Loaded paths are canonical; the working directory may not be (e.g. a Windows 8.3 name).
     std::env::current_dir()
         .ok()
-        .and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        .and_then(|cwd| {
+            let canon = dunce::canonicalize(&cwd).ok();
+            [Some(cwd), canon]
+                .into_iter()
+                .flatten()
+                .find_map(|dir| path.strip_prefix(dir).ok().map(Path::to_path_buf))
+        })
         .unwrap_or_else(|| path.to_path_buf())
         .display()
         .to_string()
