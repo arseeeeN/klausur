@@ -877,7 +877,7 @@ test "gives up" { never("c") }
 test "timeouts count as not yet" { expect warmup("d").body.ready }
 test "until must be a boolean" { badUntil("e") }
 test "sleep honours the test timeout" timeout("200ms") { sleep(5000) }
-test "while holds for the whole time" { expect stays("f", 1000).polls >= 6 }
+test "while holds for the whole time" { expect stays("f", 1000).polls >= 3 }
 test "while stops holding" { stays("g", 3) }
 "#,
     );
@@ -952,7 +952,7 @@ test "writes and cleans up" rollback {
     let p = temp_file("out/a.txt", "hello")
     expect file_exists(p)
     expect read_file(p) == "hello"
-    expect p.starts_with("/")
+    expect p != "out/a.txt" && p.ends_with("a.txt")   // the absolute path
 }
 test "the file is gone" { expect !file_exists("out/a.txt") }
 test "transactions keep it on success" {

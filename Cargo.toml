@@ -15,6 +15,7 @@ cssparser = "0.37"
 csv = "1"
 ctrlc = "3"
 dotenvy = "0.15"
+dunce = "1"
 miette = { version = "7.6", features = ["fancy"] }
 percent-encoding = "2"
 regex = "1"

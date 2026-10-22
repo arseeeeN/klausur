@@ -340,7 +340,7 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
             std::fs::write(&full, bytes_of(&content)).map_err(|e| {
                 Failure::new(format!("can't write {}: {e}", full.display())).into_err()
             })?;
-            let full = std::fs::canonicalize(&full).unwrap_or(full);
+            let full = dunce::canonicalize(&full).unwrap_or(full);
             Ok(full.to_string_lossy().into_owned())
         },
     );

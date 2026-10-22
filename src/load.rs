@@ -381,7 +381,7 @@ fn parse_all(paths: &[PathBuf], diags: &mut Vec<Diag>) -> Loaded {
     };
     let mut by_path: HashMap<PathBuf, FileId> = HashMap::new();
     let mut add = |l: &mut Loaded, path: &Path, diags: &mut Vec<Diag>| -> Option<FileId> {
-        let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let canon = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         if let Some(id) = by_path.get(&canon) {
             return Some(*id);
         }
