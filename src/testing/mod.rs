@@ -191,7 +191,9 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
         t.0.borrow_mut().skip = Some(value::display_plain(&reason))
     });
     engine.register_fn("only", |t: &mut TestDef| t.0.borrow_mut().only = true);
-    engine.register_fn("parallel", |t: &mut TestDef| t.0.borrow_mut().parallel = true);
+    engine.register_fn("parallel", |t: &mut TestDef| {
+        t.0.borrow_mut().parallel = true
+    });
     engine.register_fn("tags", |t: &mut TestDef, tags: Array| {
         t.0.borrow_mut()
             .tags

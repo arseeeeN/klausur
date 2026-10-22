@@ -11,15 +11,26 @@ fold and indent queries. It extends
 This directory is also a Neovim plugin: a filetype rule for `*.kl`, an ftplugin that starts
 tree-sitter, and the queries under `queries/klausur/`. Neovim 0.11 loads the parser from
 `parser/klausur.so` on the runtime path, so nvim-treesitter doesn't need to know about it.
-Building it needs only a C compiler. With lazy.nvim:
+Building it needs only a C compiler. With lazy.nvim, which can't install a subdirectory of a
+repository by itself:
 
 ```lua
 {
-    dir = "~/Coding/klausur/editors/tree-sitter-klausur",
+    "arseeeeN/klausur",
     name = "klausur",
-    build = "make",
+    build = "make -C editors/tree-sitter-klausur",
     lazy = false,
+    config = function(plugin)
+        vim.opt.rtp:append(plugin.dir .. "/editors/tree-sitter-klausur")
+        vim.filetype.add({ extension = { kl = "klausur" } })
+    end,
 }
+```
+
+With a local checkout, point lazy at this directory instead, and then it needs no `config`:
+
+```lua
+{ dir = "~/Coding/klausur/editors/tree-sitter-klausur", name = "klausur", build = "make", lazy = false }
 ```
 
 After changing the grammar, run `:Lazy build klausur`, or `make` in this directory.

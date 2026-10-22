@@ -675,7 +675,8 @@ impl<'a> Parser<'a> {
             if line.trim() == "```" {
                 break (pos, end, line.len() - line.trim_start().len());
             }
-            lines.push((pos, end));
+            // A CRLF file gives the same body as an LF one: lines are joined with `\n`.
+            lines.push((pos, end - usize::from(line.ends_with('\r'))));
             pos = end + 1;
         };
         let (close_start, close_end, indent) = close;
@@ -1004,15 +1005,17 @@ test "roles" (role in ["user", "admin"]) {
 
     #[test]
     fn fenced_bodies_are_dedented() {
-        let src = "@a {\n    connection { POST http://x }\n    send ```\n        line {{x}}\n          more\n        ```\n}";
-        let file = parse_ok(src);
-        let Item::Request(r) = &file.items[0] else {
-            panic!()
-        };
-        let Some(Send::Raw(t)) = &r.body.send else {
-            panic!()
-        };
-        assert_eq!(t.display(src), "line {{x}}\n  more");
+        let lf = "@a {\n    connection { POST http://x }\n    send ```\n        line {{x}}\n          more\n        ```\n}";
+        for src in [lf.to_string(), lf.replace('\n', "\r\n")] {
+            let file = parse_ok(&src);
+            let Item::Request(r) = &file.items[0] else {
+                panic!()
+            };
+            let Some(Send::Raw(t)) = &r.body.send else {
+                panic!()
+            };
+            assert_eq!(t.display(&src), "line {{x}}\n  more");
+        }
     }
 
     #[test]

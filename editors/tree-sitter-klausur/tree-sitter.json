@@ -14,7 +14,7 @@
     "version": "0.1.0",
     "license": "MIT",
     "description": "Tree-sitter grammar for klausur API test files",
-    "links": { "repository": "https://github.com/arseen/klausur" }
+    "links": { "repository": "https://github.com/arseeeeN/klausur" }
   },
   "bindings": { "c": false, "go": false, "node": false, "python": false, "rust": false, "swift": false }
 }
