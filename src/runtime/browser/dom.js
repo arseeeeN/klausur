@@ -162,6 +162,8 @@
       if (!out.visible) break;
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       const r = el.getBoundingClientRect();
+      // The caller compares boxes across probes to wait until it stops moving.
+      out.box = [r.left, r.top, r.width, r.height];
       const x = r.left + r.width / 2, y = r.top + r.height / 2;
       const hit = hitAt(x, y);
       if (hit && inside(el, hit)) { out.x = x; out.y = y; }

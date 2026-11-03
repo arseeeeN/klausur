@@ -127,9 +127,11 @@ impl Locator {
     // --- Actions ----------------------------------------------------------------------------
 
     pub fn click(&self, shared: &Shared) -> R<()> {
+        let stable = Stable::default();
         let v = self.one(shared, "click", "point", Json::Null, |v| {
             not_visible(v)
                 .or_else(|| disabled(v))
+                .or_else(|| stable.moving(v))
                 .or_else(|| covered(v))
         })?;
         let (x, y) = point(&v);
@@ -139,8 +141,11 @@ impl Locator {
     }
 
     pub fn hover(&self, shared: &Shared) -> R<()> {
+        let stable = Stable::default();
         let v = self.one(shared, "hover", "point", Json::Null, |v| {
-            not_visible(v).or_else(|| covered(v))
+            not_visible(v)
+                .or_else(|| stable.moving(v))
+                .or_else(|| covered(v))
         })?;
         let (x, y) = point(&v);
         self.page.mouse("mouseMoved", x, y, 0)
@@ -171,12 +176,14 @@ impl Locator {
     /// Check or uncheck a checkbox or radio button by clicking it, unless it already is.
     pub fn set_checked(&self, shared: &Shared, want: bool) -> R<()> {
         let action = if want { "check" } else { "uncheck" };
+        let stable = Stable::default();
         let v = self.one(shared, action, "point", json!("check"), |v| {
             if v["checked"] == want {
                 return None;
             }
             not_visible(v)
                 .or_else(|| disabled(v))
+                .or_else(|| stable.moving(v))
                 .or_else(|| covered(v))
         })?;
         if v["checked"] == want {
@@ -321,6 +328,21 @@ impl Locator {
             1 => Ok(v["visible"] == true),
             n => Err(self.strict(n, &v)),
         }
+    }
+}
+
+/// Playwright clicks an element only once its box stayed the same for two animation frames, so
+/// a click doesn't land where a sliding or growing element was a moment ago. klausur compares
+/// the boxes of consecutive probes (25 ms apart) instead: animation frames stop in background
+/// tabs, which `--headed` runs with several pages have.
+#[derive(Default)]
+struct Stable(std::cell::RefCell<Option<Json>>);
+
+impl Stable {
+    fn moving(&self, v: &Json) -> Option<String> {
+        let now = v.get("box").cloned();
+        let before = self.0.replace(now.clone());
+        (now.is_none() || before != now).then(|| format!("{} is still moving", element(v)))
     }
 }
 

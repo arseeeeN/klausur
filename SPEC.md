@@ -866,11 +866,11 @@ is `page.locator(sel).click()`.
 
 | Method | Does | Waits for |
 |---|---|---|
-| `click()` | Click its centre with the mouse, after scrolling it into view | visible, enabled, not covered |
-| `hover()` | Move the mouse over it | visible, not covered |
+| `click()` | Click its centre with the mouse, after scrolling it into view | visible, enabled, still, not covered |
+| `hover()` | Move the mouse over it | visible, still, not covered |
 | `fill(text)` | Replace the text of an input, textarea or editable element, as typing would | visible, enabled, editable |
 | `press(key)` | Focus it and press a key: `"Enter"`, `"a"`, `"Shift+Tab"`, `"Control+a"` | attached |
-| `check()`, `uncheck()` | Click a checkbox or radio button unless it already is in that state | visible, enabled, not covered |
+| `check()`, `uncheck()` | Click a checkbox or radio button unless it already is in that state | visible, enabled, still, not covered |
 | `select(v)` | Select options of a `<select>` by value or label (a string or an array); returns the values | visible, enabled, the options |
 | `upload(path)` | Set the files of an `<input type="file">` (a path or an array, relative to the test file) | attached |
 | `wait()` | Wait for `state:` `"visible"` (default), `"hidden"`, `"attached"` or `"detached"` | the state |
@@ -884,6 +884,9 @@ is `page.locator(sel).click()`.
 - Methods that target one element are **strict**, as in Playwright: when the locator matches
   several elements they fail at once, list the matches, and suggest `first()`, `last()` or
   `nth(i)`.
+- "Still" means its box didn't change between two checks 25 ms apart, so a click doesn't land
+  where a sliding or growing element was a moment ago. Playwright compares two animation frames;
+  those stop in background tabs, which `--headed` runs with several pages have.
 - Some mistakes fail at once rather than wait, as in Playwright: filling a checkbox, `select`
   on something that isn't a `<select>`, checking something that isn't a checkbox.
 - `page.press(key)` presses a key wherever the focus is.

@@ -1276,6 +1276,7 @@ fn browser_pages() {
   <p id="file-name"></p>
   <div id="spinner">Loading…</div>
   <search-box></search-box>
+  <button id="jumpy" style="position:fixed;top:300px;left:0">Jumpy</button>
   <button id="far" style="margin-top:2000px">Far below</button>
   <script>
     customElements.define('search-box', class extends HTMLElement {
@@ -1301,6 +1302,14 @@ fn browser_pages() {
         }
       }, 300);
     });
+    // Jumps 40 px every 20 ms for 400 ms, so a click aimed where it was misses it.
+    const jumpy = document.querySelector('#jumpy');
+    let steps = 0;
+    const timer = setInterval(() => {
+      jumpy.style.left = (++steps * 40) + 'px';
+      if (steps === 20) clearInterval(timer);
+    }, 20);
+    jumpy.addEventListener('click', () => { document.title = 'caught it'; });
     document.querySelector('#doc').addEventListener('change', e => {
       document.querySelector('#file-name').textContent = e.target.files[0].name;
     });
@@ -1356,6 +1365,12 @@ test "forms" {{
     page.upload("#doc", "notes.txt")
     expect page.text("#file-name") == "notes.txt"
     page.wait("#spinner", state: "hidden")
+}}
+
+test "clicks wait for moving elements" {{
+    let page = browser().open(url)
+    page.click("#jumpy")
+    expect page.title == "caught it"
 }}
 
 test "shadow dom" {{
@@ -1414,6 +1429,7 @@ test "waits end with the test" timeout("500ms") {{
         "✓ enter submits, clicks scroll, dialogs are dismissed",
         "✓ forms",
         "✓ shadow dom",
+        "✓ clicks wait for moving elements",
         "✓ cases don't share storage",
         "✓ cases don't share storage either",
         "✗ a failed expectation shows the page",
@@ -1424,7 +1440,7 @@ test "waits end with the test" timeout("500ms") {{
         r#"<button#go> "Go" is disabled"#,
         r#"an input of type "checkbox" can't be filled"#,
         "test timed out after 500 ms while `click` on `#nope` waited",
-        "6 passed, 5 failed",
+        "7 passed, 5 failed",
     ] {
         assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
     }
