@@ -67,6 +67,21 @@ test "names are kept as sent" (name in gen::string(1..20)) rollback runs(20) {
   `poll` are built in, and your own are plain functions with `before`/`after`/`around` hooks.
 - **Helpers:** CSS selectors over HTML and XML, JSONPath, multipart uploads, SSE, JWT, base64,
   regex and files.
+- **Browser tests** *(experimental)*: drive Chrome from the same tests, with an API modelled on
+  Playwright's. Set data up through the API, check it in the UI, and let `rollback` clean up:
+
+  ```
+  test "a new user shows up in the admin list" rollback {
+      let user = createUser("alice")
+      let page = browser().open(`${ui}/admin/users`)
+      page.fill("input[type=search]", "alice")
+      expect page.locator(".user-row").texts().contains("alice")
+  }
+  ```
+
+  Actions wait until their element can take them, `expect` retries while the page catches up,
+  and a failure comes with a screenshot, console errors and failed requests. It needs Chrome or
+  Chromium installed. See [SPEC.md §14](SPEC.md#14-browser-pages-experimental).
 
 ## Install
 
@@ -99,6 +114,7 @@ klausur test tests/users.test.kl "fetched"    # files and test-name filters
 klausur test --seed 503069000                 # replay the generated cases of an earlier run
 klausur test -j 8 -v                          # 8 parallel cases at a time, with request traces
 klausur list                                  # requests, functions and tests
+klausur test --headed                         # show the browser window of browser tests
 ```
 
 `env("NAME")` reads the environment, then `.env.<name>` (with `--env <name>`), then `.env`.

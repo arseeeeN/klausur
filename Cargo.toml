@@ -1,6 +1,6 @@
 [package]
 name = "klausur"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Send API requests and run API tests, written in a small scripting language"
 license = "MIT"
