@@ -88,7 +88,7 @@ fn retrying(
     expr: &Expr,
 ) -> R<Option<(Failure, Position)>> {
     let started = Instant::now();
-    let window = started + super::browser::timeout(shared);
+    let window = started + super::browser::expect_timeout(shared);
     // An `expect` inside a function called from another one leaves the retrying to the outer.
     let outer = shared.expect_window.get().is_some();
     loop {

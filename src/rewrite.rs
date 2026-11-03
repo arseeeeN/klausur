@@ -1,7 +1,8 @@
 //! Pre-pass over Rhai code: named arguments and namespace qualification.
 //!
-//! - `f(a: 1, b: 2)` becomes `f__kw(#{a: 1, b: 2})`; positional arguments mixed in are passed
-//!   as `_0`, `_1`, …. The `__kw` variant of every callable unpacks the map.
+//! - `f(a: 1, b: 2)` becomes `f__kw(#{a: 1, b: 2})`, and `x.m(a: 1)` becomes `x.m__kw(#{a: 1})`;
+//!   positional arguments mixed in are passed as `_0`, `_1`, …. The `__kw` variant of every
+//!   callable unpacks the map.
 //! - `ns::f(…)` becomes `f(…)` when `ns` is an import alias of the file.
 //!
 //! - In statement blocks, a newline that ends a statement gets a `;`, so semicolons are optional.
@@ -111,9 +112,8 @@ impl Rewriter<'_> {
                     pos += 1;
                     continue;
                 }
-                c if scan::is_ident_start(c)
-                    && (pos == 0 || !is_ident_char(bytes[pos - 1]) && bytes[pos - 1] != b'.') =>
-                {
+                // Methods too: `page.wait(sel, state: "hidden")` calls `wait__kw` on `page`.
+                c if scan::is_ident_start(c) && (pos == 0 || !is_ident_char(bytes[pos - 1])) => {
                     let (path_end, segments) = self.path(pos);
                     last = Some(b'a');
                     last_end = path_end;
@@ -278,7 +278,12 @@ mod tests {
             r#"f__kw(#{"_0": "x", role: g__kw(#{a: 1})})"#
         );
         assert_eq!(rewrite("f(#{a: 1}, 2)"), "f(#{a: 1}, 2)");
-        assert_eq!(rewrite(r#"x.method(a: 1)"#), r#"x.method(a: 1)"#);
+        assert_eq!(rewrite(r#"x.method(a: 1)"#), r#"x.method__kw(#{a: 1})"#);
+        assert_eq!(
+            rewrite(r#"page.wait(".x", state: "hidden")"#),
+            r#"page.wait__kw(#{"_0": ".x", state: "hidden"})"#
+        );
+        assert_eq!(rewrite("x.method(a)"), "x.method(a)");
         assert_eq!(rewrite(r#""f(a: 1)""#), r#""f(a: 1)""#);
     }
 

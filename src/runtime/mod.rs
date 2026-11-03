@@ -48,8 +48,6 @@ pub struct Config {
     pub undo_backoff: Duration,
     /// Show the browser window instead of running Chrome headless.
     pub headed: bool,
-    /// How long page actions wait for their element, and page expectations retry.
-    pub browser_timeout: Duration,
 }
 
 impl Default for Config {
@@ -61,7 +59,6 @@ impl Default for Config {
             undo_attempts: 3,
             undo_backoff: Duration::from_millis(250),
             headed: false,
-            browser_timeout: Duration::from_secs(5),
         }
     }
 }

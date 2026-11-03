@@ -710,7 +710,11 @@ pub fn run_case(
             let args: Vec<String> = spec.args.iter().map(|(_, v)| display(v)).collect();
             args.join(",")
         });
-        session.describe_failure(f, &crate::runtime::browser::file_name(&test.name, &case));
+        let file = shared.sources.get(test.file).path.display().to_string();
+        session.describe_failure(
+            f,
+            &crate::runtime::browser::file_name(&file, &test.name, &case),
+        );
     }
     while shared.state.borrow().scopes.len() > scopes_before {
         undo::close(shared, engine, false);

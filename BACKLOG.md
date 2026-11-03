@@ -56,7 +56,8 @@ real screenshots or use several tabs.
    - Retrying `expect` when it read a page, and only then, reads naturally:
      `expect page.texts(".result").contains(word)`.
    - `goto` and `eval` are reserved words in Rhai; the methods are `navigate` and `evaluate`.
-2. Settle the API from what the spike shows, then add frames, file uploads, and network
-   interception and mocking.
+2. ~~Settle the API from what the spike shows, then add frames, file uploads, and network
+   interception and mocking.~~ Done, following Playwright (SPEC §14): locators, strictness,
+   form controls, uploads, shadow DOM, routes and `requests(glob)`. Frames are still open.
 3. Playwright-level robustness, meaning full checks that an element can actually be clicked,
    shadow DOM, and trace files, is a much larger project; take it on only if needed.

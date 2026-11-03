@@ -824,58 +824,125 @@ error, failed expectation and call trace points at the original file.
 ## 14. Browser pages *(experimental)*
 
 A test can drive a real Chrome, so it can set up data with requests, check the result in the UI,
-and still have `rollback` clean up after it:
+and still have `rollback` clean up after it. The API follows Playwright's; where it differs,
+this section says why.
 
 ```
 test "a search shows the page that was just indexed" rollback writer() {
-    let word = unique("zebrafinch")
     indexContent(ctx.writer, `klausur://${word}`, `The ${word} nests here.`, `/klausur/${word}`)
-    let page = browser(timeout: "30s").open("http://localhost:5173")
+    let page = browser(expect_timeout: "30s").open("http://localhost:5173")
     page.fill("textarea", word)
-    page.press("Enter")
+    page.press("textarea", "Enter")
     expect page.texts(".results-list__url").contains(word)
 }
 ```
 
-- `browser()` returns the case's browser: its own context, like an incognito window, so cases
-  share no cookies or storage. Its pages close when the case ends, after its undo actions.
-  `browser(timeout: "30s")` sets how long its waits and retries last (default 5 s).
+### 14.1 Browsers and pages
+
+- `browser()` is the case's browser context, like an incognito window: cases share no cookies
+  or storage. Its pages close when the case ends, after its undo actions. One Chrome serves the
+  whole run, and `parallel` cases each get their own context in it.
+- `browser(timeout: "10s", expect_timeout: "30s")` sets how long actions wait (default 30 s)
+  and how long page expectations retry (default 5 s). Playwright's actions have no timeout of
+  their own and end with the test's; klausur tests have no timeout by default, hence the 30 s.
 - `browser().open(url)` opens a page and waits until it has loaded and its network has been
-  quiet for 300 ms (at most 3 s). Frameworks such as SvelteKit attach event handlers after the
-  `load` event, so a click right after it could do nothing.
-- **Actions wait** until their selector matches exactly one visible element that can take the
-  action: enabled, and for clicks not covered by another element. Several visible matches are
-  an error that says so.
+  quiet for 300 ms (at most 3 s). Playwright waits for `load` only, but frameworks such as
+  SvelteKit attach their event handlers after it, so a click right after `load` can do nothing.
+- Dialogs (`alert`, `confirm`, …) are dismissed, as in Playwright, unless the page called
+  `accept_dialogs()`. Either way they show up in `console()`.
+
+### 14.2 Locators
+
+`page.locator(sel)` is a locator: a description of elements, resolved again each time it's used.
+`locator.locator(sel)` narrows it down, `first()`, `last()` and `nth(i)` pick one (negative
+counts from the end), and `filter(has_text: "…", has_not_text: "…", visible: true)` filters,
+matching text case-insensitively.
+
+Selectors are CSS. As in Playwright, they reach into open shadow roots: in `my-widget input`,
+the input can be inside `<my-widget>`'s shadow DOM.
+
+Every element method exists on locators, and on pages with a selector first: `page.click(sel)`
+is `page.locator(sel).click()`.
+
+| Method | Does | Waits for |
+|---|---|---|
+| `click()` | Click its centre with the mouse, after scrolling it into view | visible, enabled, not covered |
+| `hover()` | Move the mouse over it | visible, not covered |
+| `fill(text)` | Replace the text of an input, textarea or editable element, as typing would | visible, enabled, editable |
+| `press(key)` | Focus it and press a key: `"Enter"`, `"a"`, `"Shift+Tab"`, `"Control+a"` | attached |
+| `check()`, `uncheck()` | Click a checkbox or radio button unless it already is in that state | visible, enabled, not covered |
+| `select(v)` | Select options of a `<select>` by value or label (a string or an array); returns the values | visible, enabled, the options |
+| `upload(path)` | Set the files of an `<input type="file">` (a path or an array, relative to the test file) | attached |
+| `wait()` | Wait for `state:` `"visible"` (default), `"hidden"`, `"attached"` or `"detached"` | the state |
+| `text()` | Its rendered text (`innerText`), trimmed | attached |
+| `value()` | The value of an input, textarea or select | attached |
+| `checked()` | Whether a checkbox or radio button is checked | attached |
+| `texts()` | The texts of all matches | nothing |
+| `count()` | How many elements match | nothing |
+| `visible()` | Whether it's visible; false when nothing matches | nothing |
+
+- Methods that target one element are **strict**, as in Playwright: when the locator matches
+  several elements they fail at once, list the matches, and suggest `first()`, `last()` or
+  `nth(i)`.
+- Some mistakes fail at once rather than wait, as in Playwright: filling a checkbox, `select`
+  on something that isn't a `<select>`, checking something that isn't a checkbox.
+- `page.press(key)` presses a key wherever the focus is.
+
+### 14.3 Pages
 
 | On a page | Does |
 |---|---|
 | `navigate(url)` | Load another URL in the same page |
-| `click(sel)` | Scroll the element into view and click its centre with the mouse |
-| `fill(sel, text)` | Replace the text of an input, textarea or editable element, as typing would |
-| `press(key)` | Press a key: `"Enter"`, `"a"`, `"Shift+Tab"`, `"Control+a"` |
-| `wait(sel)` | Wait until something matching `sel` is visible |
-| `text(sel)` | The text of the one visible match (an input's value), after waiting for it |
-| `texts(sel)` | The texts of all visible matches, right away |
-| `count(sel)`, `exists(sel)` | How many visible matches there are, whether there's one, right away |
 | `url`, `title`, `html()` | The page's URL, title and HTML; `html_select(page.html(), sel)` works |
 | `evaluate(js)` | Run JavaScript in the page and return its result (promises are awaited) |
-| `console()` | Console errors and warnings, uncaught exceptions and accepted dialogs so far |
+| `console()` | Console errors and warnings, uncaught exceptions and dialogs so far |
+| `requests()`, `requests(glob)` | What the page requested so far: `#{method, url, body, status, error}` |
+| `route(glob, response)` | Answer matching requests (see below); also on `browser()`, for all its pages |
+| `unroute(glob)` | Remove the routes for a glob |
+| `accept_dialogs()` | Accept dialogs from now on |
 | `screenshot(path)` | Save a PNG, relative to the test file |
 | `close()` | Close the page early |
 
-- **`expect` retries** an expectation that read a page while it's false, until the browser's
-  timeout: pages change on their own, so `expect page.texts(".result").len() == 3` waits for
-  the results. It isn't retried when it sent a request, which would be sent again. The report
-  says how long it retried.
-- **Failure reports** of a case with an open page add the page's URL and title, a screenshot in
-  `klausur-results/<test>.png` (taken before undo runs), console errors, and requests that
-  failed or got a 4xx/5xx status.
-- JavaScript dialogs are accepted, as a user clicking OK; they'd block the page otherwise.
-- `--headed` shows the window. One Chrome serves the whole run, and `parallel` cases each get
-  their own context in it. Chrome is found in the usual install locations or on the `PATH`;
+`goto` and `eval`, Playwright's names, are reserved words in Rhai, hence `navigate` and
+`evaluate`.
+
+### 14.4 Expectations
+
+`expect` retries an expectation that read a page while it's false, until the expect timeout:
+pages change on their own, so `expect page.texts(".result").len() == 3` waits for the results.
+It isn't retried when it sent a request, which would be sent again. The report says how long it
+retried. This replaces Playwright's assertion functions (`toHaveText`, `toHaveCount`, …):
+klausur's `expect` takes any expression. `requests(glob)` with a retrying `expect` replaces
+`waitForRequest`.
+
+### 14.5 Network mocking
+
+`page.route(glob, response)` answers requests whose URL matches `glob` without letting them
+reach the network. Globs are Playwright's: matched against the whole URL, `*` within a path
+segment, `**` across segments, `{a,b}` for either, everything else literal.
+
+```
+page.route("**/api/chat*", #{ status: 500, json: #{ error: "boom" } })
+page.route("**/*.png", "abort")
+browser().route("http://app.test/**", #{ path: "fixtures/site/index.html" })
+```
+
+- A response is `#{ status, headers, content_type, json | body | path }`: `status` defaults to
+  200, `json` sets `application/json`, `path` reads a file (relative to the test file) and
+  guesses its type. `"abort"` makes the request fail as a network error.
+- The route added last wins, and a page's routes come before its browser's, as in Playwright.
+- Playwright's route handlers are callbacks; klausur's are fixed responses. Chrome holds a
+  request until it's answered, and a callback would have to run on the test thread, which may
+  be waiting on Chrome itself (during navigation, for example) and would deadlock.
+
+### 14.6 Failure reports and options
+
+- A failed case with an open page adds the page's URL and title, a screenshot in
+  `klausur-results/<file>-<test>.png` (taken before undo runs), console errors, and requests
+  that failed or got a 4xx/5xx status. Like Playwright's `test-results/`, `klausur-results/` is
+  emptied when `klausur test` starts.
+- `--headed` shows the window. Chrome is found in the usual install locations or on the `PATH`;
   `CHROME` overrides that.
 
-Open: frames and shadow DOM, file uploads, select boxes and checkboxes, network mocking,
-Playwright-style traces, and other browsers through WebDriver BiDi. The API is opaque, so the
-Chrome-specific backend can be replaced without changing tests.
-
+Open: frames, file downloads, Playwright-style traces, and other browsers through WebDriver
+BiDi. The API is opaque, so the Chrome-specific backend can be replaced without changing tests.

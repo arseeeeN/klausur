@@ -1270,12 +1270,27 @@ fn browser_pages() {
   <form id="f"><input name="q"><button type="submit" id="go" disabled>Go</button></form>
   <ul id="results"></ul>
   <div id="overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.3)"></div>
+  <label><input type="checkbox" id="agree"> I agree</label>
+  <select id="size"><option value="s">Small</option><option value="l">Large</option></select>
+  <input type="file" id="doc">
+  <p id="file-name"></p>
+  <div id="spinner">Loading…</div>
+  <search-box></search-box>
   <button id="far" style="margin-top:2000px">Far below</button>
   <script>
+    customElements.define('search-box', class extends HTMLElement {
+      connectedCallback() {
+        const root = this.attachShadow({ mode: 'open' });
+        root.innerHTML = '<input class="inner" placeholder="Search"><span class="echo"></span>';
+        const input = root.querySelector('input');
+        input.addEventListener('input', () => { root.querySelector('.echo').textContent = input.value; });
+      }
+    });
     const q = document.querySelector('input[name=q]');
     const go = document.querySelector('#go');
     q.addEventListener('input', () => { go.disabled = q.value.trim() === ''; });
     setTimeout(() => document.querySelector('#overlay').remove(), 300);
+    setTimeout(() => document.querySelector('#spinner').style.display = 'none', 300);
     document.querySelector('#f').addEventListener('submit', e => {
       e.preventDefault();
       const term = q.value;
@@ -1286,11 +1301,17 @@ fn browser_pages() {
         }
       }, 300);
     });
-    document.querySelector('#far').addEventListener('click', () => { alert('hi'); document.title = 'clicked'; });
+    document.querySelector('#doc').addEventListener('change', e => {
+      document.querySelector('#file-name').textContent = e.target.files[0].name;
+    });
+    document.querySelector('#far').addEventListener('click', () => {
+      document.title = confirm('sure?') ? 'confirmed' : 'declined';
+    });
     console.error('boom from the page');
   </script>
 </body></html>"##,
     );
+    p.file("notes.txt", "some notes");
     let path = p.path("page.html").display().to_string().replace('\\', "/");
     let url = format!("file:///{}", path.trim_start_matches('/'));
     p.file(
@@ -1304,17 +1325,43 @@ test "waits for the overlay and for results" {{
     page.fill("input[name=q]", "zebrafinch")
     page.click("#go")
     expect page.texts(".result") == ["zebrafinch one", "zebrafinch two"]
-    expect page.text("input[name=q]") == "zebrafinch"
+    expect page.value("input[name=q]") == "zebrafinch"
+    expect page.locator(".result").first().text() == "zebrafinch one"
+    expect page.locator("li").filter(has_text: "TWO").text() == "zebrafinch two"
+    expect page.locator("#results").locator("li").nth(-1).text() == "zebrafinch two"
 }}
 
-test "enter submits, clicks scroll, dialogs don't block" {{
+test "enter submits, clicks scroll, dialogs are dismissed" {{
     let page = browser().open(url)
     page.fill("input[name=q]", "otter")
-    page.press("Enter")
+    page.press("input[name=q]", "Enter")
     expect page.count(".result") == 2
     page.click("#far")
-    expect page.title == "clicked"
-    expect page.console().contains("alert accepted: hi")
+    expect page.title == "declined"
+    expect page.console().contains("confirm dismissed: sure?")
+    page.accept_dialogs()
+    page.click("#far")
+    expect page.title == "confirmed"
+}}
+
+test "forms" {{
+    let page = browser().open(url)
+    page.check("#agree")
+    page.check("#agree")
+    expect page.checked("#agree")
+    page.uncheck("#agree")
+    expect !page.checked("#agree")
+    expect page.select("#size", "Large") == ["l"]
+    expect page.value("#size") == "l"
+    page.upload("#doc", "notes.txt")
+    expect page.text("#file-name") == "notes.txt"
+    page.wait("#spinner", state: "hidden")
+}}
+
+test "shadow dom" {{
+    let page = browser().open(url)
+    page.fill("search-box .inner", "deep")
+    expect page.text("search-box .echo") == "deep"
 }}
 
 test "cases don't share storage" {{
@@ -1329,22 +1376,25 @@ test "cases don't share storage either" {{
 }}
 
 test "a failed expectation shows the page" {{
-    let page = browser(timeout: "1s").open(url)
+    let page = browser(expect_timeout: "1s").open(url)
     expect page.title == "Another title"
 }}
 
 test "ambiguous selectors fail" {{
-    let page = browser(timeout: "1s").open(url)
+    let page = browser().open(url)
     page.fill("input[name=q]", "x")
-    page.press("Enter")
-    page.wait(".result")
+    page.press("input[name=q]", "Enter")
+    page.locator(".result").first().wait()
     page.text(".result")
 }}
 
 test "disabled buttons can't be clicked" {{
     let page = browser(timeout: "1s").open(url)
-    sleep(400)
     page.click("#go")
+}}
+
+test "a checkbox can't be filled" {{
+    browser().open(url).fill("#agree", "x")
 }}
 
 test "waits end with the test" timeout("500ms") {{
@@ -1361,24 +1411,115 @@ test "waits end with the test" timeout("500ms") {{
     assert_eq!(out.code, 1, "{}", out.all());
     for line in [
         "✓ waits for the overlay and for results",
-        "✓ enter submits, clicks scroll, dialogs don't block",
+        "✓ enter submits, clicks scroll, dialogs are dismissed",
+        "✓ forms",
+        "✓ shadow dom",
         "✓ cases don't share storage",
         "✓ cases don't share storage either",
         "✗ a failed expectation shows the page",
         r#"expectation failed: "Spike page" == "Another title" (retried for"#,
-        "screenshot: klausur-results/a-failed-expectation-shows-the-page.png",
+        "screenshot: klausur-results/b-a-failed-expectation-shows-the-page.png",
         "console.error: boom from the page",
-        "it matches 2 visible elements",
-        "<button#go> is disabled",
-        "test timed out after 500 ms while `click(\"#nope\")` waited",
-        "4 passed, 4 failed",
+        "`.result` matches 2 elements",
+        r#"<button#go> "Go" is disabled"#,
+        r#"an input of type "checkbox" can't be filled"#,
+        "test timed out after 500 ms while `click` on `#nope` waited",
+        "6 passed, 5 failed",
     ] {
         assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
     }
     assert!(
-        p.path("klausur-results/a-failed-expectation-shows-the-page.png")
+        p.path("klausur-results/b-a-failed-expectation-shows-the-page.png")
             .exists()
     );
     // Page handles stay out of `where:`; the page section describes them.
     assert!(!out.stdout.contains("\n    page = "), "{}", out.all());
+}
+
+#[test]
+fn browser_routes() {
+    let server = start();
+    let p = Project::new("routes");
+    p.file(
+        "site/index.html",
+        r##"<!doctype html>
+<html><head><title>Mocked site</title></head>
+<body>
+  <button id="load">Load</button>
+  <p id="out"></p>
+  <script>
+    document.querySelector('#load').addEventListener('click', async () => {
+      const out = document.querySelector('#out');
+      try {
+        const r = await fetch('/api/data?n=1', { method: 'POST', body: '{"ask":1}' });
+        out.textContent = r.ok ? (await r.json()).message : 'status ' + r.status;
+      } catch (e) {
+        out.textContent = 'network error';
+      }
+    });
+  </script>
+</body></html>"##,
+    );
+    p.file(
+        "r.test.kl",
+        r##"
+fn site() {
+    let b = browser()
+    b.route("http://klausur.test/**", #{ path: "site/index.html" })
+    b
+}
+
+test "a mocked site and api" {
+    let b = site()
+    b.route("**/api/data*", #{ json: #{ message: "from the mock" } })
+    let page = b.open("http://klausur.test/")
+    expect page.title == "Mocked site"
+    page.click("#load")
+    expect page.text("#out") == "from the mock"
+    let sent = page.requests("**/api/data*")
+    expect sent.len() == 1
+    expect sent[0].method == "POST" && sent[0].body == `{"ask":1}` && sent[0].status == 200
+}
+
+test "the newest route wins, and unroute removes it" {
+    let page = site().open("http://klausur.test/")
+    page.route("**/api/data*", #{ json: #{ message: "first" } })
+    page.route("**/api/data*", #{ status: 503 })
+    page.click("#load")
+    expect page.text("#out") == "status 503"
+    page.unroute("**/api/data*")
+    page.route("**/api/data*", "abort")
+    page.click("#load")
+    expect page.text("#out") == "network error"
+}
+
+test "failed requests show in the report" {
+    let page = site().open("http://klausur.test/")
+    page.route("**/api/data*", #{ status: 500 })
+    page.click("#load")
+    expect page.text("#out") == "it worked"
+}
+
+test "locators take no selector" {
+    let page = site().open("http://klausur.test/")
+    page.locator("body").click("#load")
+}
+"##,
+    );
+    let out = p.run(&server, &["test", "r.test.kl"]);
+    if out.all().contains("couldn't find Chrome") {
+        eprintln!("skipping browser_routes: no Chrome on this machine");
+        return;
+    }
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ a mocked site and api",
+        "✓ the newest route wins, and unroute removes it",
+        "✗ failed requests show in the report",
+        "500 POST http://klausur.test/api/data?n=1",
+        "a locator's `click` takes no selector",
+        "2 passed, 2 failed",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
 }

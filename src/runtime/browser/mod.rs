@@ -1,53 +1,56 @@
 //! Browser pages for end-to-end tests, driven over the Chrome DevTools Protocol.
 //!
-//! Tests only see `browser()` and `page` values; nothing here leaks protocol details, so the
-//! backend can change later (e.g. to WebDriver BiDi). One Chrome process serves the whole run,
-//! and every test case gets its own browser context (like an incognito window) that is closed
-//! when the case ends.
+//! Tests only see `browser()`, `page` and `locator` values; nothing here leaks protocol details,
+//! so the backend can change later (e.g. to WebDriver BiDi). One Chrome process serves the whole
+//! run, and every test case gets its own browser context (like an incognito window) that is
+//! closed when the case ends. The API follows Playwright's unless there's a reason not to.
 
 mod cdp;
 mod chrome;
 mod keys;
+mod locator;
+mod page;
+mod route;
 
-use super::builtins::base64_decode;
 use super::value;
 use super::{Failure, PageReport, Shared};
 use cdp::Connection;
-use rhai::{Array, Dynamic, Engine, EvalAltResult};
-use serde_json::{Value as Json, json};
+use locator::Locator;
+use page::{Page, PageInner, Routes, Timeouts};
+use rhai::{Array, Dynamic, Engine, EvalAltResult, Map};
+use route::{Action, Route};
+use serde_json::json;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 type R<T> = Result<T, Box<EvalAltResult>>;
 
 /// The Chrome process shared by all worker threads, started on first use.
 static CHROME: Mutex<Option<Arc<chrome::Chrome>>> = Mutex::new(None);
 
-/// Where failure screenshots go, relative to the working directory.
+/// Where failure screenshots go, relative to the working directory. Like Playwright's
+/// `test-results/`, it's emptied when `klausur test` starts.
 pub const RESULTS_DIR: &str = "klausur-results";
 
-/// How long one protocol call may take. Navigation waits separately, in [`Page::navigate`].
+/// How long one protocol call may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How often waits check the page again.
 const POLL: Duration = Duration::from_millis(25);
-
-/// After loading, a page counts as settled once no request was in flight for this long.
-const QUIET: Duration = Duration::from_millis(300);
-
-/// How long navigation waits for the network to settle before going on anyway (a page with a
-/// long poll never settles).
-const SETTLE_MAX: Duration = Duration::from_secs(3);
 
 /// Stop Chrome. Called when klausur exits; contexts and pages die with it.
 pub fn shutdown() {
     // `try_lock`: the Ctrl-C handler calls this too, and must not wait for a launch in progress.
     let chrome = CHROME.try_lock().map(|mut c| c.take()).ok().flatten();
     drop(chrome);
+}
+
+/// Empty `klausur-results/` before a test run, so it only holds this run's screenshots.
+pub fn clear_results() {
+    let _ = std::fs::remove_dir_all(RESULTS_DIR);
 }
 
 fn connection(headed: bool) -> Result<Connection, Failure> {
@@ -66,8 +69,9 @@ pub struct Session {
     conn: Connection,
     context: String,
     pages: RefCell<Vec<Page>>,
-    /// How long actions wait and page expectations retry; `browser(timeout: …)` changes it.
-    timeout: Rc<Cell<Duration>>,
+    timeouts: Rc<Timeouts>,
+    /// `browser().route(…)`: routes for every page of the context.
+    routes: Routes,
 }
 
 impl Session {
@@ -83,12 +87,13 @@ impl Session {
                 .unwrap_or_default()
                 .to_string(),
             pages: RefCell::default(),
-            timeout: Rc::new(Cell::new(shared.config.browser_timeout)),
+            timeouts: Rc::default(),
+            routes: Routes::default(),
         })
     }
 
     fn open(&self, shared: &Shared, url: &str) -> R<Page> {
-        let call = |method: &str, params: Json| {
+        let call = |method: &str, params: serde_json::Value| {
             self.conn
                 .call(None, method, params, CALL_TIMEOUT)
                 .map_err(|e| fail(format!("couldn't open a page: {e}")))
@@ -115,7 +120,10 @@ impl Session {
             net: Arc::default(),
             number: self.pages.borrow().len() + 1,
             closed: Cell::new(false),
-            timeout: self.timeout.clone(),
+            timeouts: self.timeouts.clone(),
+            accept_dialogs: Arc::default(),
+            routes: Routes::default(),
+            context_routes: self.routes.clone(),
         }));
         page.listen();
         for domain in [
@@ -125,6 +133,10 @@ impl Session {
             "Network.enable",
         ] {
             page.call(domain, json!({}))?;
+        }
+        // The context's routes apply from the first request on.
+        if !self.routes.lock().map(|r| r.is_empty()).unwrap_or(true) {
+            page.sync_routes()?;
         }
         self.pages.borrow_mut().push(page.clone());
         page.navigate(shared, url)?;
@@ -144,8 +156,8 @@ impl Session {
         );
     }
 
-    /// Attach the state of the last open page to a failure: URL, title, console errors, and a
-    /// screenshot saved under `klausur-results/`.
+    /// Attach the state of the last open page to a failure: URL, title, console errors, failed
+    /// requests, and a screenshot saved under `klausur-results/`.
     pub fn describe_failure(&self, f: &mut Failure, name: &str) {
         let pages = self.pages.borrow();
         let Some(page) = pages.iter().rev().find(|p| !p.0.closed.get()) else {
@@ -170,19 +182,19 @@ impl Session {
             title: read("document.title"),
             screenshot,
             console: page.console(),
-            failed_requests: page
-                .0
-                .net
-                .lock()
-                .map(|n| n.failed.clone())
-                .unwrap_or_default(),
+            failed_requests: page.failed_requests(),
         }));
     }
 }
 
-/// A file name for a case's screenshot: the test name, plus a short hash of the case.
-pub fn file_name(test: &str, case: &str) -> String {
-    let mut name = test
+/// A file name for a case's screenshot: the test file and name, plus a short hash of the case.
+pub fn file_name(file: &str, test: &str, case: &str) -> String {
+    let stem = Path::new(file)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .map(|f| f.trim_end_matches(".kl").trim_end_matches(".test"))
+        .unwrap_or_default();
+    let mut name = format!("{stem} {test}")
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
@@ -201,506 +213,6 @@ pub fn file_name(test: &str, case: &str) -> String {
 #[derive(Clone)]
 pub struct BrowserHandle(Rc<Session>);
 
-#[derive(Clone)]
-pub struct Page(Rc<PageInner>);
-
-struct PageInner {
-    conn: Connection,
-    session: String,
-    target: String,
-    /// Console errors and warnings, uncaught exceptions and failed loads, for failure reports.
-    console: Arc<Mutex<Vec<String>>>,
-    net: Arc<Mutex<Net>>,
-    number: usize,
-    closed: Cell<bool>,
-    timeout: Rc<Cell<Duration>>,
-}
-
-/// The page's network traffic: what's in flight, for waiting until it settles, and what failed,
-/// for failure reports.
-#[derive(Default)]
-struct Net {
-    /// Request id → "METHOD url".
-    in_flight: HashMap<String, String>,
-    last_change: Option<Instant>,
-    failed: Vec<String>,
-}
-
-impl Net {
-    fn event(&mut self, method: &str, params: &Json) {
-        let id = params["requestId"].as_str().unwrap_or_default().to_string();
-        match method {
-            "Network.requestWillBeSent" => {
-                // Streams stay open for as long as the page lives; they never settle.
-                if matches!(params["type"].as_str(), Some("EventSource" | "WebSocket")) {
-                    return;
-                }
-                let r = &params["request"];
-                let what = format!(
-                    "{} {}",
-                    r["method"].as_str().unwrap_or("GET"),
-                    r["url"].as_str().unwrap_or_default()
-                );
-                self.in_flight.insert(id, what);
-            }
-            "Network.responseReceived" => {
-                let status = params["response"]["status"].as_u64().unwrap_or(0);
-                if status >= 400
-                    && let Some(what) = self.in_flight.get(&id)
-                {
-                    self.failed.push(format!("{status} {what}"));
-                }
-                return;
-            }
-            "Network.loadingFinished" => {
-                self.in_flight.remove(&id);
-            }
-            "Network.loadingFailed" => {
-                if let Some(what) = self.in_flight.remove(&id)
-                    && params["canceled"].as_bool() != Some(true)
-                {
-                    let why = params["errorText"].as_str().unwrap_or("failed");
-                    self.failed.push(format!("{why} {what}"));
-                }
-            }
-            _ => return,
-        }
-        self.last_change = Some(Instant::now());
-    }
-
-    fn settled(&self) -> bool {
-        self.in_flight.is_empty() && self.last_change.is_none_or(|t| t.elapsed() >= QUIET)
-    }
-}
-
-/// What the probe script found for a selector.
-#[derive(Default)]
-struct Probe {
-    count: u64,
-    visible: u64,
-    /// Present when exactly one element is visible.
-    element: Option<String>,
-    enabled: bool,
-    editable: bool,
-    text: Option<String>,
-    texts: Vec<String>,
-    point: Option<(f64, f64)>,
-    covered_by: Option<String>,
-}
-
-/// Finds the elements matching a selector and reports whether the single visible one can be
-/// acted on. `want` picks the extra checks: "point" scrolls it into view and hit-tests its
-/// centre, "editable" also checks it takes text, "text"/"texts" read text.
-const PROBE: &str = r#"
-(sel, want) => {
-  let all;
-  try { all = Array.from(document.querySelectorAll(sel)); }
-  catch (e) { return { invalid: String(e.message) }; }
-  const describe = el => {
-    let s = el.tagName.toLowerCase();
-    if (el.id) s += '#' + el.id;
-    if (typeof el.className === 'string' && el.className.trim())
-      s += '.' + el.className.trim().split(/\s+/).slice(0, 3).join('.');
-    return '<' + s + '>';
-  };
-  const isVisible = el => {
-    if (!el.checkVisibility({ visibilityProperty: true })) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
-  };
-  const textOf = el => ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
-    ? String(el.value) : el.innerText.trim();
-  const shown = all.filter(isVisible);
-  const out = { count: all.length, visible: shown.length };
-  if (want === 'texts') { out.texts = shown.map(textOf); return out; }
-  if (shown.length !== 1) return out;
-  const el = shown[0];
-  out.element = describe(el);
-  out.enabled = !(el.disabled || el.closest('fieldset[disabled]')) &&
-    el.getAttribute('aria-disabled') !== 'true';
-  if (want === 'text') out.text = textOf(el);
-  if (want === 'editable') {
-    const kind = (el.getAttribute('type') || 'text').toLowerCase();
-    out.editable = !el.readOnly && (el.isContentEditable || el.tagName === 'TEXTAREA' ||
-      (el.tagName === 'INPUT' && !['checkbox', 'radio', 'button', 'submit', 'reset', 'file',
-        'image', 'range', 'color', 'hidden'].includes(kind)));
-  }
-  if (want === 'point' || want === 'editable') {
-    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-    const r = el.getBoundingClientRect();
-    const x = r.left + r.width / 2, y = r.top + r.height / 2;
-    const hit = document.elementFromPoint(x, y);
-    if (hit && (hit === el || el.contains(hit))) { out.x = x; out.y = y; }
-    else out.covered_by = hit ? describe(hit) : 'nothing (off screen)';
-  }
-  return out;
-}
-"#;
-
-impl Page {
-    fn call(&self, method: &str, params: Json) -> R<Json> {
-        if self.0.closed.get() {
-            return Err(fail("the page is closed"));
-        }
-        self.0
-            .conn
-            .call(Some(&self.0.session), method, params, CALL_TIMEOUT)
-            .map_err(fail)
-    }
-
-    fn listen(&self) {
-        let console = self.0.console.clone();
-        let net = self.0.net.clone();
-        let conn = self.0.conn.clone();
-        let session = self.0.session.clone();
-        let push = move |line: String| {
-            if let Ok(mut c) = console.lock() {
-                c.push(line);
-            }
-        };
-        self.0.conn.listen(
-            &self.0.session.clone(),
-            Arc::new(move |method, params| match method {
-                m if m.starts_with("Network.") => {
-                    if let Ok(mut n) = net.lock() {
-                        n.event(m, params);
-                    }
-                }
-                "Runtime.consoleAPICalled" => {
-                    let kind = params["type"].as_str().unwrap_or_default();
-                    if kind == "error" || kind == "warning" {
-                        let args: Vec<String> = params["args"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .map(|a| match &a["value"] {
-                                Json::String(s) => s.clone(),
-                                Json::Null => a["description"].as_str().unwrap_or("").to_string(),
-                                v => v.to_string(),
-                            })
-                            .collect();
-                        push(format!("console.{kind}: {}", args.join(" ")));
-                    }
-                }
-                "Runtime.exceptionThrown" => {
-                    let d = &params["exceptionDetails"];
-                    let msg = d["exception"]["description"]
-                        .as_str()
-                        .or(d["text"].as_str())
-                        .unwrap_or("an exception");
-                    push(format!(
-                        "uncaught {}",
-                        msg.lines().next().unwrap_or_default()
-                    ));
-                }
-                "Log.entryAdded" => {
-                    let e = &params["entry"];
-                    if matches!(e["level"].as_str(), Some("error" | "warning")) {
-                        let url = e["url"]
-                            .as_str()
-                            .map(|u| format!(" ({u})"))
-                            .unwrap_or_default();
-                        push(format!("{}{url}", e["text"].as_str().unwrap_or_default()));
-                    }
-                }
-                // A dialog blocks the page until it's answered; accept it, as a user clicking OK.
-                "Page.javascriptDialogOpening" => {
-                    push(format!(
-                        "{} accepted: {}",
-                        params["type"].as_str().unwrap_or("dialog"),
-                        params["message"].as_str().unwrap_or_default()
-                    ));
-                    conn.send(
-                        Some(&session),
-                        "Page.handleJavaScriptDialog",
-                        json!({ "accept": true }),
-                    );
-                }
-                _ => {}
-            }),
-        );
-    }
-
-    fn close(&self) {
-        if !self.0.closed.replace(true) {
-            self.0.conn.forget(&self.0.session);
-            let _ = self.0.conn.call(
-                None,
-                "Target.closeTarget",
-                json!({ "targetId": self.0.target }),
-                CALL_TIMEOUT,
-            );
-        }
-    }
-
-    fn console(&self) -> Vec<String> {
-        self.0.console.lock().map(|c| c.clone()).unwrap_or_default()
-    }
-
-    /// Evaluate JavaScript in the page and return its result as JSON (promises are awaited).
-    fn eval(&self, js: &str) -> R<Json> {
-        let r = self.call(
-            "Runtime.evaluate",
-            json!({
-                "expression": js,
-                "returnByValue": true,
-                "awaitPromise": true,
-                "userGesture": true,
-            }),
-        )?;
-        if let Some(ex) = r.get("exceptionDetails") {
-            let msg = ex["exception"]["description"]
-                .as_str()
-                .or(ex["text"].as_str())
-                .unwrap_or("an exception");
-            return Err(fail(msg.lines().next().unwrap_or_default().to_string()));
-        }
-        Ok(r["result"].get("value").cloned().unwrap_or(Json::Null))
-    }
-
-    fn probe(&self, selector: &str, want: &str) -> R<Probe> {
-        let v = self.eval(&format!("({PROBE})({}, {})", json!(selector), json!(want)))?;
-        if let Some(msg) = v.get("invalid").and_then(Json::as_str) {
-            return Err(fail(format!(
-                "`{selector}` isn't a valid CSS selector: {msg}"
-            )));
-        }
-        let s = |k: &str| v.get(k).and_then(Json::as_str).map(str::to_string);
-        Ok(Probe {
-            count: v["count"].as_u64().unwrap_or(0),
-            visible: v["visible"].as_u64().unwrap_or(0),
-            element: s("element"),
-            enabled: v["enabled"].as_bool().unwrap_or(false),
-            editable: v["editable"].as_bool().unwrap_or(false),
-            text: s("text"),
-            texts: v["texts"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|t| t.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            point: v["x"].as_f64().zip(v["y"].as_f64()),
-            covered_by: s("covered_by"),
-        })
-    }
-
-    /// Retry `ready` until it gives a value, the page timeout passes, the test times out, or the
-    /// run is interrupted. `ready` returns why it isn't ready yet, for the error.
-    fn wait_for<T>(
-        &self,
-        shared: &Shared,
-        action: &str,
-        mut ready: impl FnMut() -> R<Result<T, String>>,
-    ) -> R<T> {
-        shared.page_reads.set(shared.page_reads.get() + 1);
-        let started = Instant::now();
-        let mut until = started + self.0.timeout.get();
-        if let Some(window) = shared.expect_window.get() {
-            until = until.min(window.max(started));
-        }
-        loop {
-            let why = match ready()? {
-                Ok(v) => return Ok(v),
-                Err(why) => why,
-            };
-            if Instant::now() >= until {
-                return Err(fail(format!(
-                    "`{action}` gave up after {}: {why}",
-                    crate::testing::humantime(started.elapsed())
-                )));
-            }
-            if let Err(stop) = super::request::wait(shared, POLL) {
-                let stop = if stop.contains("timed out") {
-                    "timed out"
-                } else {
-                    "interrupted"
-                };
-                return Err(fail(format!("{stop} while `{action}` waited: {why}")));
-            }
-        }
-    }
-
-    /// Wait for exactly one visible element matching `selector` that passes `check`.
-    fn element(
-        &self,
-        shared: &Shared,
-        action: &str,
-        selector: &str,
-        want: &str,
-        check: impl Fn(&Probe) -> Option<String>,
-    ) -> R<Probe> {
-        self.wait_for(shared, &format!("{action}(\"{selector}\")"), || {
-            let p = self.probe(selector, want)?;
-            Ok(match (p.count, p.visible) {
-                (0, _) => Err("nothing matches it".into()),
-                (1, 0) => Err("it matches 1 element, but it isn't visible".into()),
-                (n, 0) => Err(format!("it matches {n} elements, but none is visible")),
-                (_, n) if n > 1 => Err(format!(
-                    "it matches {n} visible elements; make it match one (e.g. with \
-                     `:nth-child(…)`), or use `texts`"
-                )),
-                _ => match check(&p) {
-                    Some(why) => Err(why),
-                    None => Ok(p),
-                },
-            })
-        })
-    }
-
-    fn navigate(&self, shared: &Shared, url: &str) -> R<()> {
-        // Mark the old document, so the wait below can't mistake it for the new one.
-        self.eval("window.__klausurOld = true")?;
-        let r = self.call("Page.navigate", json!({ "url": url }))?;
-        if let Some(e) = r.get("errorText").and_then(Json::as_str) {
-            return Err(fail(format!("couldn't open {url}: {e}")));
-        }
-        self.wait_for(shared, &format!("navigate(\"{url}\")"), || {
-            // During the switch to the new document an evaluation can fail; that's "not yet".
-            let state = self
-                .eval("window.__klausurOld ? 'old' : document.readyState")
-                .unwrap_or(Json::Null);
-            Ok(match state.as_str() {
-                Some("complete") => Ok(()),
-                Some("old") => Err("the page hasn't started loading".into()),
-                _ => Err("the page is still loading".into()),
-            })
-        })?;
-        // `load` doesn't wait for scripts loaded with `import()`, and frameworks such as
-        // SvelteKit and Next.js attach their event handlers that way: a click right after `load`
-        // can hit a button that does nothing yet. Wait for the network to settle too.
-        let started = Instant::now();
-        while started.elapsed() < SETTLE_MAX.min(self.0.timeout.get()) {
-            if self.0.net.lock().map(|n| n.settled()).unwrap_or(true) {
-                break;
-            }
-            if let Err(stop) = super::request::wait(shared, POLL) {
-                let stop = if stop.contains("timed out") {
-                    "timed out"
-                } else {
-                    "interrupted"
-                };
-                return Err(fail(format!(
-                    "{stop} while `navigate(\"{url}\")` waited for the page to settle"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    fn click(&self, shared: &Shared, selector: &str) -> R<()> {
-        let p = self.element(shared, "click", selector, "point", |p| {
-            disabled(p).or_else(|| p.covered_by.as_ref().map(covered))
-        })?;
-        let (x, y) = p.point.unwrap_or_default();
-        for (kind, count) in [("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 1)] {
-            self.call(
-                "Input.dispatchMouseEvent",
-                json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": count }),
-            )?;
-        }
-        Ok(())
-    }
-
-    fn fill(&self, shared: &Shared, selector: &str, text: &str) -> R<()> {
-        self.element(shared, "fill", selector, "editable", |p| {
-            disabled(p)
-                .or_else(|| (!p.editable).then(|| format!("{} doesn't take text", el(p))))
-                .or_else(|| p.covered_by.as_ref().map(covered))
-        })?;
-        // Select what's there and type over it: the input events a user would cause.
-        self.eval(&format!(
-            "(() => {{
-               const el = [...document.querySelectorAll({})].find(e => e.checkVisibility());
-               el.focus();
-               if (el.select) el.select();
-               else {{ const r = document.createRange(); r.selectNodeContents(el);
-                       const s = getSelection(); s.removeAllRanges(); s.addRange(r); }}
-             }})()",
-            json!(selector)
-        ))?;
-        if text.is_empty() {
-            self.press("Backspace")
-        } else {
-            self.call("Input.insertText", json!({ "text": text }))
-                .map(|_| ())
-        }
-    }
-
-    fn press(&self, combo: &str) -> R<()> {
-        let key = keys::parse(combo).map_err(fail)?;
-        let mut down = json!({
-            "type": if key.text.is_some() { "keyDown" } else { "rawKeyDown" },
-            "key": key.key,
-            "code": key.code,
-            "windowsVirtualKeyCode": key.key_code,
-            "modifiers": key.modifiers,
-        });
-        if let Some(text) = &key.text {
-            down["text"] = json!(text);
-        }
-        self.call("Input.dispatchKeyEvent", down)?;
-        self.call(
-            "Input.dispatchKeyEvent",
-            json!({
-                "type": "keyUp",
-                "key": key.key,
-                "code": key.code,
-                "windowsVirtualKeyCode": key.key_code,
-                "modifiers": key.modifiers,
-            }),
-        )?;
-        Ok(())
-    }
-
-    fn text(&self, shared: &Shared, selector: &str) -> R<String> {
-        let p = self.element(shared, "text", selector, "text", |_| None)?;
-        Ok(p.text.unwrap_or_default())
-    }
-
-    fn wait(&self, shared: &Shared, selector: &str) -> R<()> {
-        self.wait_for(shared, &format!("wait(\"{selector}\")"), || {
-            let p = self.probe(selector, "")?;
-            Ok(match (p.count, p.visible) {
-                (_, 1..) => Ok(()),
-                (0, _) => Err("nothing matches it".into()),
-                _ => Err("it matches only hidden elements".into()),
-            })
-        })
-    }
-
-    fn screenshot_to(&self, path: &Path) -> Result<PathBuf, String> {
-        let r = self
-            .call("Page.captureScreenshot", json!({ "format": "png" }))
-            .map_err(|e| e.to_string())?;
-        let png = base64_decode(r["data"].as_str().unwrap_or_default())?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(path, png).map_err(|e| e.to_string())?;
-        Ok(path.to_path_buf())
-    }
-
-    /// A string property of the page, such as `location.href`; counts as reading the page.
-    fn read(&self, shared: &Shared, js: &str) -> R<String> {
-        shared.page_reads.set(shared.page_reads.get() + 1);
-        Ok(self.eval(js)?.as_str().unwrap_or_default().to_string())
-    }
-}
-
-fn disabled(p: &Probe) -> Option<String> {
-    (!p.enabled).then(|| format!("{} is disabled", el(p)))
-}
-
-fn el(p: &Probe) -> String {
-    p.element.clone().unwrap_or_else(|| "the element".into())
-}
-
-fn covered(by: &String) -> String {
-    format!("another element would get the click: {by}")
-}
-
 fn fail(msg: impl Into<String>) -> Box<EvalAltResult> {
     Failure::new(msg).into_err()
 }
@@ -712,12 +224,14 @@ fn slot(shared: &Shared) -> super::BrowserSlot {
     }
 }
 
-/// How long page expectations retry: the session's timeout, once `browser()` was called.
-pub fn timeout(shared: &Shared) -> Duration {
+/// How long page expectations retry: the browser's `expect_timeout`, 5 s by default.
+pub fn expect_timeout(shared: &Shared) -> Duration {
     slot(shared)
         .borrow()
         .as_ref()
-        .map_or(shared.config.browser_timeout, |s| s.timeout.get())
+        .map_or(Timeouts::default().expect.get(), |s| {
+            s.timeouts.expect.get()
+        })
 }
 
 /// The current case's session, or the run's own when no case is running.
@@ -731,20 +245,188 @@ fn session(shared: &Shared) -> R<Rc<Session>> {
     Ok(s)
 }
 
+/// What a route answers with: `"abort"`, or a response map like Playwright's `route.fulfill`:
+/// `#{ status, headers, content_type, json | body | path }`.
+fn route_action(shared: &Shared, v: &Dynamic) -> R<Action> {
+    if v.is_string() {
+        return match v.to_string().as_str() {
+            "abort" => Ok(Action::Abort),
+            other => Err(fail(format!(
+                "a route answers with a response map or \"abort\", not {}",
+                json!(other)
+            ))),
+        };
+    }
+    let Some(map) = v.read_lock::<Map>().map(|m| m.clone()) else {
+        return Err(fail(format!(
+            "a route answers with a response map or \"abort\", not {}",
+            value::type_name(v)
+        )));
+    };
+    let (_, named) = options(
+        map,
+        &["status", "headers", "content_type", "json", "body", "path"],
+        "route",
+    )?;
+    let mut status = 200;
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut content_type = None;
+    let mut body = Vec::new();
+    for (k, v) in named {
+        match k.as_str() {
+            "status" => {
+                status = v
+                    .as_int()
+                    .ok()
+                    .and_then(|s| u16::try_from(s).ok())
+                    .ok_or_else(|| fail("a route's `status` must be a number such as 404"))?
+            }
+            "headers" => {
+                let h = v
+                    .read_lock::<Map>()
+                    .map(|m| m.clone())
+                    .ok_or_else(|| fail("a route's `headers` must be a map"))?;
+                headers.extend(
+                    h.into_iter()
+                        .map(|(k, v)| (k.to_string(), value::to_text(&v))),
+                );
+            }
+            "content_type" => content_type = Some(v.to_string()),
+            "json" => {
+                let j = value::to_json(&v).map_err(fail)?;
+                body = j.to_string().into_bytes();
+                content_type.get_or_insert_with(|| "application/json".to_string());
+            }
+            "body" => body = super::builtins::bytes_of(&v),
+            _ => {
+                let path = v.to_string();
+                let full = shared.resolve_path(&path);
+                body = std::fs::read(&full)
+                    .map_err(|e| fail(format!("a route can't read {path}: {e}")))?;
+                content_type
+                    .get_or_insert_with(|| super::builtins::guess_content_type(&path).to_string());
+            }
+        }
+    }
+    if let Some(ct) = content_type
+        && !headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+    {
+        headers.push(("Content-Type".into(), ct));
+    }
+    Ok(Action::Fulfil {
+        status,
+        headers,
+        body,
+    })
+}
+
+fn add_route(routes: &Routes, glob: &str, action: Action) {
+    if let Ok(mut r) = routes.lock() {
+        r.push(Route::new(glob, action));
+    }
+}
+
+fn remove_routes(routes: &Routes, glob: &str) {
+    if let Ok(mut r) = routes.lock() {
+        r.retain(|r| r.glob != glob);
+    }
+}
+
+fn request_map(r: &page::Request) -> Dynamic {
+    let (status, error) = match &r.outcome {
+        Some(Ok(s)) => (Dynamic::from(i64::from(*s)), Dynamic::UNIT),
+        Some(Err(e)) => (Dynamic::UNIT, Dynamic::from(e.clone())),
+        None => (Dynamic::UNIT, Dynamic::UNIT),
+    };
+    Dynamic::from(value::map_of([
+        ("method", Dynamic::from(r.method.clone())),
+        ("url", Dynamic::from(r.url.clone())),
+        ("body", r.body.clone().map_or(Dynamic::UNIT, Dynamic::from)),
+        ("status", status),
+        ("error", error),
+    ]))
+}
+
+/// A string, or an array of strings: `select("a")`, `select(["a", "b"])`.
+fn strings(v: &Dynamic, what: &str) -> R<Vec<String>> {
+    if v.is_array() {
+        v.clone()
+            .into_array()
+            .unwrap_or_default()
+            .iter()
+            .map(|x| strings(x, what).map(|mut s| s.remove(0)))
+            .collect()
+    } else if v.is_string() {
+        Ok(vec![v.to_string()])
+    } else {
+        Err(fail(format!(
+            "{what} must be a string or an array of strings, not {}",
+            value::type_name(v)
+        )))
+    }
+}
+
+/// Named options: checks the names, and returns the positional `_0`, `_1`, … in order.
+fn options(map: Map, allowed: &[&str], call: &str) -> R<(Vec<Dynamic>, Map)> {
+    let mut positional = Vec::new();
+    let mut named = Map::new();
+    for (k, v) in map {
+        if let Some(i) = k.strip_prefix('_').and_then(|i| i.parse::<usize>().ok()) {
+            positional.push((i, v));
+        } else if allowed.contains(&k.as_str()) {
+            named.insert(k, v);
+        } else {
+            return Err(fail(format!(
+                "`{call}` takes {}, not `{k}`",
+                allowed
+                    .iter()
+                    .map(|a| format!("`{a}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+    }
+    positional.sort_by_key(|(i, _)| *i);
+    Ok((positional.into_iter().map(|(_, v)| v).collect(), named))
+}
+
+fn filter(l: &Locator, opts: Map) -> R<Locator> {
+    let (_, named) = options(opts, &["has_text", "has_not_text", "visible"], "filter")?;
+    let mut out = l.clone();
+    for (k, v) in named {
+        out = match k.as_str() {
+            "has_text" => out.has_text(&v.to_string(), false),
+            "has_not_text" => out.has_text(&v.to_string(), true),
+            _ => out.visible(
+                v.as_bool()
+                    .map_err(|_| fail("`visible` takes true or false"))?,
+            ),
+        };
+    }
+    Ok(out)
+}
+
 pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     engine.register_type_with_name::<BrowserHandle>("browser");
     engine.register_type_with_name::<Page>("page");
+    engine.register_type_with_name::<Locator>("locator");
+
+    // --- browser() ------------------------------------------------------------------------
     let s = shared.clone();
     engine.register_fn("browser", move || -> R<BrowserHandle> {
         Ok(BrowserHandle(session(&s)?))
     });
     let s = shared.clone();
-    engine.register_fn("browser__kw", move |opts: rhai::Map| -> R<BrowserHandle> {
+    engine.register_fn("browser__kw", move |opts: Map| -> R<BrowserHandle> {
         let session = session(&s)?;
-        for (k, v) in opts {
+        let (_, named) = options(opts, &["timeout", "expect_timeout"], "browser")?;
+        for (k, v) in named {
+            let d = crate::testing::parse_duration(&v)?;
             match k.as_str() {
-                "timeout" => session.timeout.set(crate::testing::parse_duration(&v)?),
-                other => return Err(fail(format!("`browser` takes `timeout`, not `{other}`"))),
+                "timeout" => session.timeouts.action.set(d),
+                _ => session.timeouts.expect.set(d),
             }
         }
         Ok(BrowserHandle(session))
@@ -762,42 +444,91 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
             .collect()
     });
 
-    // Actions wait until their element can be acted on.
+    // --- Locators -------------------------------------------------------------------------
+    engine.register_fn("locator", |p: &mut Page, sel: &str| Locator::css(p, sel));
+    engine.register_fn("locator", |l: &mut Locator, sel: &str| l.locator(sel));
+    engine.register_fn("nth", |l: &mut Locator, i: i64| l.nth(i));
+    engine.register_fn("first", |l: &mut Locator| l.nth(0));
+    engine.register_fn("last", |l: &mut Locator| l.nth(-1));
+    engine.register_fn("filter", |l: &mut Locator, opts: Map| filter(l, opts));
+    engine.register_fn("filter__kw", |l: &mut Locator, opts: Map| filter(l, opts));
+    engine.register_fn("to_string", |l: &mut Locator| {
+        format!("locator({})", json!(l.describe()))
+    });
+
+    // Every element method exists on locators, and on pages with a selector first:
+    // `page.click(".x")` is `page.locator(".x").click()`.
+    macro_rules! element_fn {
+        ($name:literal, |$l:ident, $s:ident $(, $arg:ident: $t:ty)*| $body:expr) => {{
+            let sh = shared.clone();
+            engine.register_fn($name, move |$l: &mut Locator $(, $arg: $t)*| {
+                let $s = &*sh;
+                $body
+            });
+            let sh = shared.clone();
+            engine.register_fn($name, move |p: &mut Page, sel: &str $(, $arg: $t)*| {
+                let $l = &mut Locator::css(p, sel);
+                let $s = &*sh;
+                $body
+            });
+            // Like Playwright, locators narrow down with `.locator(sel)` rather than taking a
+            // selector in each method; say so instead of "isn't defined".
+            engine.register_fn(
+                $name,
+                |l: &mut Locator, sel: &str $(, $arg: $t)*| -> R<()> {
+                    $(let _ = $arg;)*
+                    let _ = l;
+                    Err(fail(format!(
+                        "a locator's `{0}` takes no selector; narrow the locator down first: \
+                         `.locator({1}).{0}(…)`",
+                        $name,
+                        json!(sel)
+                    )))
+                },
+            );
+        }};
+    }
+    element_fn!("click", |l, s| l.click(s));
+    element_fn!("hover", |l, s| l.hover(s));
+    element_fn!("fill", |l, s, text: Dynamic| l
+        .fill(s, &value::to_text(&text)));
+    element_fn!("check", |l, s| l.set_checked(s, true));
+    element_fn!("uncheck", |l, s| l.set_checked(s, false));
+    element_fn!("select", |l, s, values: Dynamic| l
+        .select(s, strings(&values, "`select`'s options")?));
+    element_fn!("upload", |l, s, files: Dynamic| l
+        .upload(s, strings(&files, "`upload`'s files")?));
+    element_fn!("wait", |l, s| l.wait(s, "visible"));
+    element_fn!("text", |l, s| l.text(s));
+    element_fn!("value", |l, s| l.value(s));
+    element_fn!("checked", |l, s| l.checked(s));
+    element_fn!("texts", |l, s| l.texts(s));
+    element_fn!("count", |l, s| l.count(s));
+    element_fn!("visible", |l, s| l.is_visible(s));
+    // `press(key)` on a page presses it wherever the focus is; on an element it focuses first.
+    element_fn!("press", |l, s, key: &str| l.press(s, key));
+    engine.register_fn("press", |p: &mut Page, key: &str| p.press(key));
+    // `wait(state: "hidden")`, and `page.wait(sel, state: "hidden")`.
+    let s = shared.clone();
+    engine.register_fn("wait__kw", move |l: &mut Locator, opts: Map| -> R<()> {
+        let (_, named) = options(opts, &["state"], "wait")?;
+        let state = named.get("state").map(|v| v.to_string());
+        l.wait(&s, state.as_deref().unwrap_or("visible"))
+    });
+    let s = shared.clone();
+    engine.register_fn("wait__kw", move |p: &mut Page, opts: Map| -> R<()> {
+        let (positional, named) = options(opts, &["state"], "wait")?;
+        let Some(sel) = positional.first() else {
+            return Err(fail("`wait` needs a selector"));
+        };
+        let state = named.get("state").map(|v| v.to_string());
+        Locator::css(p, &sel.to_string()).wait(&s, state.as_deref().unwrap_or("visible"))
+    });
+
+    // --- Pages ----------------------------------------------------------------------------
     let s = shared.clone();
     engine.register_fn("navigate", move |p: &mut Page, url: &str| {
         p.navigate(&s, url)
-    });
-    let s = shared.clone();
-    engine.register_fn("click", move |p: &mut Page, sel: &str| p.click(&s, sel));
-    let s = shared.clone();
-    engine.register_fn("fill", move |p: &mut Page, sel: &str, text: Dynamic| {
-        p.fill(&s, sel, &value::to_text(&text))
-    });
-    engine.register_fn("press", |p: &mut Page, key: &str| p.press(key));
-    let s = shared.clone();
-    engine.register_fn("wait", move |p: &mut Page, sel: &str| p.wait(&s, sel));
-    let s = shared.clone();
-    engine.register_fn("text", move |p: &mut Page, sel: &str| p.text(&s, sel));
-
-    // Reads don't wait; inside `expect`, the whole expectation is retried instead.
-    let s = shared.clone();
-    engine.register_fn("texts", move |p: &mut Page, sel: &str| -> R<Array> {
-        s.page_reads.set(s.page_reads.get() + 1);
-        Ok(p.probe(sel, "texts")?
-            .texts
-            .into_iter()
-            .map(Dynamic::from)
-            .collect())
-    });
-    let s = shared.clone();
-    engine.register_fn("count", move |p: &mut Page, sel: &str| -> R<i64> {
-        s.page_reads.set(s.page_reads.get() + 1);
-        Ok(p.probe(sel, "")?.visible as i64)
-    });
-    let s = shared.clone();
-    engine.register_fn("exists", move |p: &mut Page, sel: &str| -> R<bool> {
-        s.page_reads.set(s.page_reads.get() + 1);
-        Ok(p.probe(sel, "")?.visible > 0)
     });
     let s = shared.clone();
     engine.register_get("url", move |p: &mut Page| p.read(&s, "location.href"));
@@ -815,6 +546,10 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     engine.register_fn("console", |p: &mut Page| -> Array {
         p.console().into_iter().map(Dynamic::from).collect()
     });
+    engine.register_fn("accept_dialogs", |p: &mut Page| {
+        p.0.accept_dialogs
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    });
     let s = shared.clone();
     engine.register_fn("screenshot", move |p: &mut Page, path: &str| -> R<String> {
         p.screenshot_to(&s.resolve_path(path))
@@ -822,10 +557,58 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
             .map_err(|e| fail(format!("couldn't save a screenshot to {path}: {e}")))
     });
     engine.register_fn("close", |p: &mut Page| p.close());
+
+    // --- Network --------------------------------------------------------------------------
+    let s = shared.clone();
+    engine.register_fn(
+        "route",
+        move |p: &mut Page, glob: &str, response: Dynamic| -> R<()> {
+            add_route(&p.0.routes, glob, route_action(&s, &response)?);
+            p.sync_routes()
+        },
+    );
+    let s = shared.clone();
+    engine.register_fn(
+        "route",
+        move |b: &mut BrowserHandle, glob: &str, response: Dynamic| -> R<()> {
+            add_route(&b.0.routes, glob, route_action(&s, &response)?);
+            for page in b.0.pages.borrow().iter().filter(|p| !p.0.closed.get()) {
+                page.sync_routes()?;
+            }
+            Ok(())
+        },
+    );
+    engine.register_fn("unroute", |p: &mut Page, glob: &str| -> R<()> {
+        remove_routes(&p.0.routes, glob);
+        p.sync_routes()
+    });
+    engine.register_fn("unroute", |b: &mut BrowserHandle, glob: &str| -> R<()> {
+        remove_routes(&b.0.routes, glob);
+        for page in b.0.pages.borrow().iter().filter(|p| !p.0.closed.get()) {
+            page.sync_routes()?;
+        }
+        Ok(())
+    });
+    // `requests()` / `requests(glob)`: what the page requested so far, oldest first.
+    let s = shared.clone();
+    engine.register_fn("requests", move |p: &mut Page| -> Array {
+        s.page_reads.set(s.page_reads.get() + 1);
+        p.requests().iter().map(request_map).collect()
+    });
+    let s = shared.clone();
+    engine.register_fn("requests", move |p: &mut Page, glob: &str| -> Array {
+        s.page_reads.set(s.page_reads.get() + 1);
+        let re = route::glob_regex(glob);
+        p.requests()
+            .iter()
+            .filter(|r| re.is_match(&r.url))
+            .map(request_map)
+            .collect()
+    });
 }
 
 /// Values the `where:` block of a failed expectation leaves out: the page section of the
 /// report says more about them.
 pub fn is_handle(v: &Dynamic) -> bool {
-    v.is::<Page>() || v.is::<BrowserHandle>()
+    v.is::<Page>() || v.is::<BrowserHandle>() || v.is::<Locator>()
 }

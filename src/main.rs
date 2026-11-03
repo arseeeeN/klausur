@@ -473,6 +473,8 @@ fn test(
         Ok(p) => p,
         Err(code) => return code,
     };
+    // Like Playwright's `test-results/`: only this run's failure screenshots.
+    runtime::browser::clear_results();
     let shared = &program.shared;
     let engine = &program.engine;
     let mut reporter = Reporter::new(&shared.sources, verbose, seed);

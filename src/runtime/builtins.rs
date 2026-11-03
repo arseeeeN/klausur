@@ -101,7 +101,7 @@ pub fn guess_content_type(name: &str) -> &'static str {
     }
 }
 
-fn bytes_of(v: &Dynamic) -> Vec<u8> {
+pub(crate) fn bytes_of(v: &Dynamic) -> Vec<u8> {
     if v.is_blob() {
         return v.clone().cast::<Blob>();
     }
