@@ -54,6 +54,9 @@ enum Command {
         /// Per-request timeout in seconds.
         #[arg(long, value_name = "SECS", default_value_t = 30)]
         timeout: u64,
+        /// Show the browser window for pages the code opens.
+        #[arg(long)]
+        headed: bool,
     },
     /// Run tests. Arguments that are existing paths select files; others filter test names.
     Test {
@@ -83,6 +86,9 @@ enum Command {
         /// How many tests marked `parallel` run at once. Other tests always run alone.
         #[arg(short, long, value_name = "N", default_value_t = 4)]
         jobs: usize,
+        /// Show the browser window for pages the tests open.
+        #[arg(long)]
+        headed: bool,
     },
     /// List requests, functions and tests.
     List {
@@ -113,6 +119,7 @@ fn main() -> ExitCode {
     let _ = ctrlc::set_handler(move || {
         if flag.swap(true, Ordering::SeqCst) {
             eprintln!("\n{}", red("interrupted again: exiting without cleanup"));
+            runtime::browser::shutdown();
             std::process::exit(130);
         }
         eprintln!(
@@ -128,7 +135,8 @@ fn main() -> ExitCode {
             env,
             quiet,
             timeout,
-        } => run(&target, &args, env, quiet, timeout, interrupted),
+            headed,
+        } => run(&target, &args, env, quiet, timeout, headed, interrupted),
         Command::Test {
             targets,
             seed,
@@ -139,6 +147,7 @@ fn main() -> ExitCode {
             verbose,
             timeout,
             jobs,
+            headed,
         } => test(
             targets,
             seed,
@@ -149,10 +158,12 @@ fn main() -> ExitCode {
             verbose,
             timeout,
             jobs.max(1),
+            headed,
             interrupted,
         ),
         Command::List { paths } => list(&paths),
     };
+    runtime::browser::shutdown();
     ExitCode::from(code as u8)
 }
 
@@ -209,6 +220,7 @@ fn run(
     env: Option<String>,
     quiet: bool,
     timeout: u64,
+    headed: bool,
     interrupted: Arc<AtomicBool>,
 ) -> i32 {
     let (path, name) = match target.rsplit_once('#') {
@@ -218,6 +230,7 @@ fn run(
     let config = Config {
         trace: !quiet,
         request_timeout: std::time::Duration::from_secs(timeout),
+        headed,
         ..Config::default()
     };
     let opts = LoadOptions {
@@ -422,6 +435,7 @@ fn test(
     verbose: bool,
     timeout: u64,
     jobs: usize,
+    headed: bool,
     interrupted: Arc<AtomicBool>,
 ) -> i32 {
     let (paths, filters): (Vec<String>, Vec<String>) =
@@ -446,6 +460,7 @@ fn test(
     let config = Config {
         trace: verbose,
         request_timeout: std::time::Duration::from_secs(timeout),
+        headed,
         ..Config::default()
     };
     let opts = LoadOptions {

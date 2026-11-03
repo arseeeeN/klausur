@@ -20,7 +20,10 @@ pub struct Recorded(pub Vec<(String, String)>);
 
 impl Recorded {
     fn add(&mut self, label: String, v: &Dynamic) {
-        if v.is::<TypeTag>() || self.0.iter().any(|(l, _)| *l == label) {
+        if v.is::<TypeTag>()
+            || super::browser::is_handle(v)
+            || self.0.iter().any(|(l, _)| *l == label)
+        {
             return;
         }
         self.0.push((label, value::truncate(&display(v), 300)));

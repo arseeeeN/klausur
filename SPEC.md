@@ -729,8 +729,8 @@ should grow beyond dotenv, e.g. with per-environment base URLs.)*
 ## 10. CLI
 
 ```
-klausur run  <file>[#name] [-a k=v ...] [--env NAME] [--timeout SECS] [-q]
-klausur test [paths/filters] [--seed N] [--case k=v|label] [--tag T] [--on-dirty=abort|continue] [--env NAME] [--timeout SECS] [-j N] [-v]
+klausur run  <file>[#name] [-a k=v ...] [--env NAME] [--timeout SECS] [-q] [--headed]
+klausur test [paths/filters] [--seed N] [--case k=v|label] [--tag T] [--on-dirty=abort|continue] [--env NAME] [--timeout SECS] [-j N] [-v] [--headed]
 klausur list [paths]
 klausur recover [--all | --discard <run-id>]   # post-v1
 klausur fmt  [paths]                           # post-v1
@@ -787,6 +787,7 @@ Also implemented:
 - a tree-sitter grammar with highlight, fold and indent queries, usable as a Neovim plugin
   (`editors/tree-sitter-klausur`)
 - `parallel` tests and `-j N`
+- browser pages driven over the Chrome DevTools Protocol, *experimental* (§14)
 
 See [GAPS.md](GAPS.md) for what testing a real service turned up.
 
@@ -817,3 +818,64 @@ namespaces, the TUI.
 
 All rewrites only insert text. The generated code carries a source map, so every Rhai
 error, failed expectation and call trace points at the original file.
+
+---
+
+## 14. Browser pages *(experimental)*
+
+A test can drive a real Chrome, so it can set up data with requests, check the result in the UI,
+and still have `rollback` clean up after it:
+
+```
+test "a search shows the page that was just indexed" rollback writer() {
+    let word = unique("zebrafinch")
+    indexContent(ctx.writer, `klausur://${word}`, `The ${word} nests here.`, `/klausur/${word}`)
+    let page = browser(timeout: "30s").open("http://localhost:5173")
+    page.fill("textarea", word)
+    page.press("Enter")
+    expect page.texts(".results-list__url").contains(word)
+}
+```
+
+- `browser()` returns the case's browser: its own context, like an incognito window, so cases
+  share no cookies or storage. Its pages close when the case ends, after its undo actions.
+  `browser(timeout: "30s")` sets how long its waits and retries last (default 5 s).
+- `browser().open(url)` opens a page and waits until it has loaded and its network has been
+  quiet for 300 ms (at most 3 s). Frameworks such as SvelteKit attach event handlers after the
+  `load` event, so a click right after it could do nothing.
+- **Actions wait** until their selector matches exactly one visible element that can take the
+  action: enabled, and for clicks not covered by another element. Several visible matches are
+  an error that says so.
+
+| On a page | Does |
+|---|---|
+| `navigate(url)` | Load another URL in the same page |
+| `click(sel)` | Scroll the element into view and click its centre with the mouse |
+| `fill(sel, text)` | Replace the text of an input, textarea or editable element, as typing would |
+| `press(key)` | Press a key: `"Enter"`, `"a"`, `"Shift+Tab"`, `"Control+a"` |
+| `wait(sel)` | Wait until something matching `sel` is visible |
+| `text(sel)` | The text of the one visible match (an input's value), after waiting for it |
+| `texts(sel)` | The texts of all visible matches, right away |
+| `count(sel)`, `exists(sel)` | How many visible matches there are, whether there's one, right away |
+| `url`, `title`, `html()` | The page's URL, title and HTML; `html_select(page.html(), sel)` works |
+| `evaluate(js)` | Run JavaScript in the page and return its result (promises are awaited) |
+| `console()` | Console errors and warnings, uncaught exceptions and accepted dialogs so far |
+| `screenshot(path)` | Save a PNG, relative to the test file |
+| `close()` | Close the page early |
+
+- **`expect` retries** an expectation that read a page while it's false, until the browser's
+  timeout: pages change on their own, so `expect page.texts(".result").len() == 3` waits for
+  the results. It isn't retried when it sent a request, which would be sent again. The report
+  says how long it retried.
+- **Failure reports** of a case with an open page add the page's URL and title, a screenshot in
+  `klausur-results/<test>.png` (taken before undo runs), console errors, and requests that
+  failed or got a 4xx/5xx status.
+- JavaScript dialogs are accepted, as a user clicking OK; they'd block the page otherwise.
+- `--headed` shows the window. One Chrome serves the whole run, and `parallel` cases each get
+  their own context in it. Chrome is found in the usual install locations or on the `PATH`;
+  `CHROME` overrides that.
+
+Open: frames and shadow DOM, file uploads, select boxes and checkboxes, network mocking,
+Playwright-style traces, and other browsers through WebDriver BiDi. The API is opaque, so the
+Chrome-specific backend can be replaced without changing tests.
+

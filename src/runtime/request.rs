@@ -176,7 +176,7 @@ fn timed_out(
     let mut f = shared.to_failure(&e, None);
     let exchange = f.exchange.as_deref().cloned().unwrap_or_default();
     if register_undo(shared, req, undo, *span, scope, &exchange, &Map::new()) {
-        f.details.push((
+        f.detail((
             "note".into(),
             "the request timed out, so its outcome is unknown; its undo was registered anyway"
                 .into(),
@@ -269,10 +269,8 @@ fn poll_until(
             }
             Ok(e) => {
                 let mut f = shared.to_failure(&e, None);
-                f.details.push((
-                    "last attempt".into(),
-                    std::mem::replace(&mut f.message, message),
-                ));
+                let last = std::mem::replace(&mut f.message, message);
+                f.detail(("last attempt".into(), last));
                 f
             }
         };
@@ -482,6 +480,7 @@ pub fn perform(
         ),
     );
     let started = Instant::now();
+    shared.requests_sent.set(shared.requests_sent.get() + 1);
     let received = match http::send(&shared.agent, &prepared, timeout) {
         Ok(r) => r,
         Err(e) => {
@@ -589,7 +588,7 @@ pub fn with_exchange(
     // A templated method is sent as given; `put` is not `PUT` to most servers.
     let upper = exchange.method.to_ascii_uppercase();
     if upper != exchange.method && http::STANDARD_METHODS.contains(&upper.as_str()) {
-        f.details.push((
+        f.detail((
             "note".into(),
             format!(
                 "the method was sent as `{}`; methods are case-sensitive, did you mean `{upper}`?",
@@ -801,7 +800,7 @@ fn build(shared: &Rc<Shared>, engine: &Engine, body: &BodyRt, scope: &mut Scope)
                 ))
                 .at(t.span);
                 let mut f = f;
-                f.details.push(("body".into(), value::truncate(&text, 500)));
+                f.detail(("body".into(), value::truncate(&text, 500)));
                 return Err(f.into_err());
             }
             content_type = Some("application/json".into());

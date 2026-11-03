@@ -3,7 +3,7 @@
 use crate::diag::Diag;
 use crate::runtime::undo::DirtyReport;
 use crate::runtime::value::truncate;
-use crate::runtime::{Exchange, Failure};
+use crate::runtime::{Exchange, Failure, PageReport};
 use crate::source::Sources;
 use crate::style::{bold, cyan, dim, green, red, yellow};
 use crate::testing::{CaseResult, humantime};
@@ -93,6 +93,47 @@ pub fn render_failure(f: &Failure, sources: &Sources) -> String {
     }
     if let Some(x) = &f.exchange {
         out.push_str(&render_exchange(x));
+    }
+    if let Some(p) = &f.page {
+        out.push_str(&render_page(p));
+    }
+    out
+}
+
+/// Console lines shown per failure; the newest are the likeliest to matter.
+const CONSOLE_LINES: usize = 8;
+
+pub fn render_page(p: &PageReport) -> String {
+    let title = if p.title.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", dim(format!("\"{}\"", truncate(&p.title, 60))))
+    };
+    let mut out = format!("  {} {}{title}\n", dim("page:"), p.url);
+    match &p.screenshot {
+        Ok(path) => out.push_str(&format!("  {} {path}\n", dim("screenshot:"))),
+        Err(why) => out.push_str(&format!("  {} {}\n", dim("screenshot:"), red(why))),
+    }
+    if !p.console.is_empty() {
+        out.push_str(&format!("  {}\n", dim("console:")));
+        let skip = p.console.len().saturating_sub(CONSOLE_LINES);
+        if skip > 0 {
+            out.push_str(&format!("    {}\n", dim(format!("… {skip} earlier"))));
+        }
+        for line in &p.console[skip..] {
+            let first = line.lines().next().unwrap_or_default();
+            out.push_str(&format!("    {}\n", truncate(first, 200)));
+        }
+    }
+    if !p.failed_requests.is_empty() {
+        out.push_str(&format!("  {}\n", dim("failed requests:")));
+        let skip = p.failed_requests.len().saturating_sub(CONSOLE_LINES);
+        if skip > 0 {
+            out.push_str(&format!("    {}\n", dim(format!("… {skip} earlier"))));
+        }
+        for r in &p.failed_requests[skip..] {
+            out.push_str(&format!("    {}\n", red(truncate(r, 200))));
+        }
     }
     out
 }

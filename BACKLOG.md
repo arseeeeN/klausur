@@ -45,8 +45,17 @@ real screenshots or use several tabs.
 - **Getting a browser:** use a local Chrome, or download a pinned "Chrome for Testing" build.
 
 **Steps:**
-1. Spike against the ai-search frontend: open, click, fill, text, wait, and a screenshot on
-   failure. A few days' work.
+1. ~~Spike against the ai-search frontend: open, click, fill, text, wait, and a screenshot on
+   failure.~~ Done on the `browser-spike` branch (SPEC §14). What it showed:
+   - The `headless_chrome` crate costs about 100 ms per protocol call: its WebSocket loop holds
+     one lock around a read with a 100 ms timeout, and every write needs that lock. klausur now
+     has its own small CDP client (`src/runtime/browser/cdp.rs`): a read thread and a separate
+     write handle, about 1 ms per call, and no async runtime.
+   - SvelteKit attaches event handlers after `load`, so the first click hit a dead button.
+     Navigation now also waits for the network to be quiet.
+   - Retrying `expect` when it read a page, and only then, reads naturally:
+     `expect page.texts(".result").contains(word)`.
+   - `goto` and `eval` are reserved words in Rhai; the methods are `navigate` and `evaluate`.
 2. Settle the API from what the spike shows, then add frames, file uploads, and network
    interception and mocking.
 3. Playwright-level robustness, meaning full checks that an element can actually be clicked,

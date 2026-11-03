@@ -684,6 +684,7 @@ pub fn run_case(
         on_dirty: script(&def.on_dirty),
         rng: Rng::new(spec.seed),
         run: Some(run.clone()),
+        browser: Rc::default(),
     });
     let started = Instant::now();
     let scopes_before = {
@@ -696,11 +697,26 @@ pub fn run_case(
     if let (Err(f), Some(t)) = (&mut outcome, def.timeout)
         && started.elapsed() >= t
     {
-        f.message = format!("test timed out after {}", humantime(t));
+        // Keep what a page wait was waiting for: "timed out while `click(…)` waited: …".
+        f.message = match f.message.strip_prefix("timed out while ") {
+            Some(rest) => format!("test timed out after {} while {rest}", humantime(t)),
+            None => format!("test timed out after {}", humantime(t)),
+        };
     }
     shared.flags.deadline.set(None);
+    // Capture the page as the failure left it, before undo actions change anything.
+    if let (Err(f), Some(session)) = (&mut outcome, frame.browser.borrow().as_ref()) {
+        let case = spec.label.clone().unwrap_or_else(|| {
+            let args: Vec<String> = spec.args.iter().map(|(_, v)| display(v)).collect();
+            args.join(",")
+        });
+        session.describe_failure(f, &crate::runtime::browser::file_name(&test.name, &case));
+    }
     while shared.state.borrow().scopes.len() > scopes_before {
         undo::close(shared, engine, false);
+    }
+    if let Some(session) = frame.browser.take() {
+        session.close();
     }
     let dirty = frame.dirty.take();
     if !dirty.is_empty() {

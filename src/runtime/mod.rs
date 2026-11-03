@@ -1,5 +1,6 @@
 //! Runtime: shared state, compiled units, failures and error mapping.
 
+pub mod browser;
 pub mod builtins;
 pub mod engine;
 pub mod explain;
@@ -45,6 +46,10 @@ pub struct Config {
     pub request_timeout: Duration,
     pub undo_attempts: u32,
     pub undo_backoff: Duration,
+    /// Show the browser window instead of running Chrome headless.
+    pub headed: bool,
+    /// How long page actions wait for their element, and page expectations retry.
+    pub browser_timeout: Duration,
 }
 
 impl Default for Config {
@@ -55,6 +60,8 @@ impl Default for Config {
             request_timeout: Duration::from_secs(30),
             undo_attempts: 3,
             undo_backoff: Duration::from_millis(250),
+            headed: false,
+            browser_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -116,7 +123,11 @@ pub struct CaseFrame {
     pub on_dirty: Vec<ScriptFn>,
     pub rng: Rng,
     pub run: Option<Rc<crate::testing::CaseRun>>,
+    /// The case's browser context and pages, opened by the first `browser()`.
+    pub browser: BrowserSlot,
 }
+
+pub type BrowserSlot = Rc<RefCell<Option<Rc<browser::Session>>>>;
 
 #[derive(Default)]
 pub struct State {
@@ -149,6 +160,14 @@ pub struct Shared {
     pub rng: Rng,
     /// Names of all requests and functions, for suggestions.
     pub callables: RefCell<Vec<String>>,
+    /// Pages opened outside any test case (`klausur run`).
+    pub browser: BrowserSlot,
+    /// Counters `expect` uses to decide whether a false expectation may be retried: it read
+    /// the page, and sent no request.
+    pub page_reads: Cell<u64>,
+    pub requests_sent: Cell<u64>,
+    /// While `expect` retries, page waits end with its window rather than their own timeout.
+    pub expect_window: Cell<Option<Instant>>,
 }
 
 impl Shared {
@@ -377,16 +396,31 @@ pub struct Exchange {
     pub error: Option<String>,
 }
 
+/// The state of a browser page when a test failed.
+#[derive(Debug, Clone)]
+pub struct PageReport {
+    pub url: String,
+    pub title: String,
+    /// Where the screenshot was saved, or why it couldn't be taken.
+    pub screenshot: Result<String, String>,
+    /// Console errors and warnings, uncaught exceptions, failed loads.
+    pub console: Vec<String>,
+    /// Requests that failed or got a 4xx/5xx status: "404 GET http://…".
+    pub failed_requests: Vec<String>,
+}
+
 /// Why something failed, with where and what was involved.
 #[derive(Debug, Clone)]
 pub struct Failure {
     pub message: String,
     pub span: Option<Span>,
     /// Labelled values, e.g. the two sides of a failed comparison.
-    pub details: Vec<(String, String)>,
+    pub details: Box<[(String, String)]>,
     /// The values of the parts of a failed expectation, shown below the source.
     pub values: Box<[(String, String)]>,
     pub exchange: Option<Box<Exchange>>,
+    /// The page a browser test was on when it failed.
+    pub page: Option<Box<PageReport>>,
     /// Call sites leading to the failure, outermost first.
     pub trace: Box<[Span]>,
 }
@@ -396,11 +430,20 @@ impl Failure {
         Failure {
             message: message.into(),
             span: None,
-            details: Vec::new(),
+            details: Box::default(),
             values: Box::default(),
             exchange: None,
+            page: None,
             trace: Box::default(),
         }
+    }
+
+    /// Add a labelled value. `details` is a boxed slice to keep `Failure` small, since every
+    /// Rhai error result carries one.
+    pub fn detail(&mut self, (label, value): (String, String)) {
+        let mut details = std::mem::take(&mut self.details).into_vec();
+        details.push((label, value));
+        self.details = details.into();
     }
 
     pub fn at(mut self, span: Span) -> Self {

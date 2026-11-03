@@ -149,6 +149,10 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
         cur_dir: RefCell::new(std::env::current_dir().unwrap_or_default()),
         rng: Rng::new(opts.seed),
         callables: RefCell::new(symbols.keys().cloned().collect()),
+        browser: Rc::default(),
+        page_reads: Cell::new(0),
+        requests_sent: Cell::new(0),
+        expect_window: Cell::new(None),
     });
     let mut engine = engine::build(&shared);
     testing::register(&mut engine, &shared);

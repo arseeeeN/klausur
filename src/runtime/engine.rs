@@ -25,7 +25,7 @@ pub fn build(shared: &Rc<Shared>) -> Engine {
     engine.set_optimization_level(rhai::OptimizationLevel::None);
     engine.set_max_call_levels(128);
     engine.set_max_expr_depths(256, 256);
-    register_expect(&mut engine);
+    register_expect(&mut engine, shared);
     register_is(&mut engine);
     register_resolver(&mut engine, shared);
     register_events(&mut engine, shared);
@@ -33,6 +33,7 @@ pub fn build(shared: &Rc<Shared>) -> Engine {
     register_functions(&mut engine, shared);
     super::builtins::register(&mut engine, shared);
     super::query::register(&mut engine);
+    super::browser::register(&mut engine, shared);
     let s = shared.clone();
     generators::register(&mut engine, Rc::new(move || s.rng()));
     engine
@@ -41,7 +42,7 @@ pub fn build(shared: &Rc<Shared>) -> Engine {
 // ---------------------------------------------------------------------------------------------
 // expect / assert / null / is
 
-fn register_expect(engine: &mut Engine) {
+fn register_expect(engine: &mut Engine, shared: &Rc<Shared>) {
     let comparisons: Rc<HashMap<&'static str, AST>> = Rc::new(
         COMPARISONS
             .iter()
@@ -57,23 +58,66 @@ fn register_expect(engine: &mut Engine) {
     );
     for keyword in ["expect", "assert"] {
         let comparisons = comparisons.clone();
+        let s = shared.clone();
         engine
-            .register_custom_syntax([keyword, "$expr$"], false, move |ctx, inputs| match check(
-                ctx,
-                &comparisons,
-                &inputs[0],
-            )? {
-                None => Ok(Dynamic::UNIT),
-                Some((failure, pos)) => Err(Box::new(EvalAltResult::ErrorRuntime(
-                    Dynamic::from(failure),
-                    pos,
-                ))),
-            })
+            .register_custom_syntax(
+                [keyword, "$expr$"],
+                false,
+                move |ctx, inputs| match retrying(&s, ctx, &comparisons, &inputs[0])? {
+                    None => Ok(Dynamic::UNIT),
+                    Some((failure, pos)) => Err(Box::new(EvalAltResult::ErrorRuntime(
+                        Dynamic::from(failure),
+                        pos,
+                    ))),
+                },
+            )
             .expect("register expect");
     }
     engine
         .register_custom_syntax(["null"], false, |_, _| Ok(Dynamic::UNIT))
         .expect("register null");
+}
+
+/// Evaluate an assertion, retrying it while it's false if it read a browser page: pages change
+/// on their own, so `expect page.text("h1") == "Done"` waits for the page to get there. It isn't
+/// retried if it sent a request, which would be sent again.
+fn retrying(
+    shared: &Shared,
+    ctx: &mut EvalContext,
+    comparisons: &HashMap<&'static str, AST>,
+    expr: &Expr,
+) -> R<Option<(Failure, Position)>> {
+    let started = Instant::now();
+    let window = started + super::browser::timeout(shared);
+    // An `expect` inside a function called from another one leaves the retrying to the outer.
+    let outer = shared.expect_window.get().is_some();
+    loop {
+        let (reads, sent) = (shared.page_reads.get(), shared.requests_sent.get());
+        if !outer {
+            shared.expect_window.set(Some(window));
+        }
+        let result = check(ctx, comparisons, expr);
+        if !outer {
+            shared.expect_window.set(None);
+        }
+        let Some((mut f, pos)) = result? else {
+            return Ok(None);
+        };
+        let retry =
+            !outer && shared.page_reads.get() != reads && shared.requests_sent.get() == sent;
+        if !retry {
+            return Ok(Some((f, pos)));
+        }
+        let waited = || crate::testing::humantime(started.elapsed());
+        if Instant::now() >= window {
+            f.message = format!("{} (retried for {})", f.message, waited());
+            return Ok(Some((f, pos)));
+        }
+        if let Err(stop) = request::wait(shared, std::time::Duration::from_millis(100)) {
+            f.message = format!("{} ({stop}; retried for {})", f.message, waited());
+            return Ok(Some((f, pos)));
+        }
+    }
 }
 
 /// Evaluate an assertion; on failure, explain which part failed and with which values.
@@ -114,8 +158,8 @@ fn check(
             } else {
                 Failure::new(format!("expectation failed: left {} right", call.name))
             };
-            f.details.push(("left".into(), l));
-            f.details.push(("right".into(), r));
+            f.detail(("left".into(), l));
+            f.detail(("right".into(), r));
             f.values = rec.0.into();
             Ok(Some((f, start_of(&call.args[0], *pos))))
         }
@@ -130,8 +174,7 @@ fn check(
                 "expected a value of type {tag}, got {}",
                 type_name(&v)
             ));
-            f.details
-                .push(("value".into(), value::truncate(&display(&v), 200)));
+            f.detail(("value".into(), value::truncate(&display(&v), 200)));
             Ok(Some((f, start_of(&call.args[0], *pos))))
         }
         _ => {

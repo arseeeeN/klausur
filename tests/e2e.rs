@@ -1257,3 +1257,128 @@ test "e" parallel { expect hold().body.overlapped && hold(ms: 10).body.peak == 9
     let out = p.run(&server, &["test", "-j", "1", "alone"]);
     assert_eq!(out.code, 0, "{}", out.all());
 }
+
+#[test]
+fn browser_pages() {
+    let server = start();
+    let p = Project::new("browser");
+    p.file(
+        "page.html",
+        r##"<!doctype html>
+<html><head><title>Spike page</title></head>
+<body>
+  <form id="f"><input name="q"><button type="submit" id="go" disabled>Go</button></form>
+  <ul id="results"></ul>
+  <div id="overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.3)"></div>
+  <button id="far" style="margin-top:2000px">Far below</button>
+  <script>
+    const q = document.querySelector('input[name=q]');
+    const go = document.querySelector('#go');
+    q.addEventListener('input', () => { go.disabled = q.value.trim() === ''; });
+    setTimeout(() => document.querySelector('#overlay').remove(), 300);
+    document.querySelector('#f').addEventListener('submit', e => {
+      e.preventDefault();
+      const term = q.value;
+      setTimeout(() => {
+        for (const t of [term + ' one', term + ' two']) {
+          const li = document.createElement('li'); li.className = 'result'; li.textContent = t;
+          document.querySelector('#results').appendChild(li);
+        }
+      }, 300);
+    });
+    document.querySelector('#far').addEventListener('click', () => { alert('hi'); document.title = 'clicked'; });
+    console.error('boom from the page');
+  </script>
+</body></html>"##,
+    );
+    let path = p.path("page.html").display().to_string().replace('\\', "/");
+    let url = format!("file:///{}", path.trim_start_matches('/'));
+    p.file(
+        "b.test.kl",
+        &format!(
+            r##"
+let url = "{url}"
+
+test "waits for the overlay and for results" {{
+    let page = browser().open(url)
+    page.fill("input[name=q]", "zebrafinch")
+    page.click("#go")
+    expect page.texts(".result") == ["zebrafinch one", "zebrafinch two"]
+    expect page.text("input[name=q]") == "zebrafinch"
+}}
+
+test "enter submits, clicks scroll, dialogs don't block" {{
+    let page = browser().open(url)
+    page.fill("input[name=q]", "otter")
+    page.press("Enter")
+    expect page.count(".result") == 2
+    page.click("#far")
+    expect page.title == "clicked"
+    expect page.console().contains("alert accepted: hi")
+}}
+
+test "cases don't share storage" {{
+    let page = browser().open(url)
+    expect page.evaluate("localStorage.getItem('k')") == null
+    page.evaluate("localStorage.setItem('k', 'v')")
+}}
+
+test "cases don't share storage either" {{
+    let page = browser().open(url)
+    expect page.evaluate("localStorage.getItem('k')") == null
+}}
+
+test "a failed expectation shows the page" {{
+    let page = browser(timeout: "1s").open(url)
+    expect page.title == "Another title"
+}}
+
+test "ambiguous selectors fail" {{
+    let page = browser(timeout: "1s").open(url)
+    page.fill("input[name=q]", "x")
+    page.press("Enter")
+    page.wait(".result")
+    page.text(".result")
+}}
+
+test "disabled buttons can't be clicked" {{
+    let page = browser(timeout: "1s").open(url)
+    sleep(400)
+    page.click("#go")
+}}
+
+test "waits end with the test" timeout("500ms") {{
+    browser().open(url).click("#nope")
+}}
+"##
+        ),
+    );
+    let out = p.run(&server, &["test", "b.test.kl"]);
+    if out.all().contains("couldn't find Chrome") {
+        eprintln!("skipping browser_pages: no Chrome on this machine");
+        return;
+    }
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ waits for the overlay and for results",
+        "✓ enter submits, clicks scroll, dialogs don't block",
+        "✓ cases don't share storage",
+        "✓ cases don't share storage either",
+        "✗ a failed expectation shows the page",
+        r#"expectation failed: "Spike page" == "Another title" (retried for"#,
+        "screenshot: klausur-results/a-failed-expectation-shows-the-page.png",
+        "console.error: boom from the page",
+        "it matches 2 visible elements",
+        "<button#go> is disabled",
+        "test timed out after 500 ms while `click(\"#nope\")` waited",
+        "4 passed, 4 failed",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+    assert!(
+        p.path("klausur-results/a-failed-expectation-shows-the-page.png")
+            .exists()
+    );
+    // Page handles stay out of `where:`; the page section describes them.
+    assert!(!out.stdout.contains("\n    page = "), "{}", out.all());
+}
