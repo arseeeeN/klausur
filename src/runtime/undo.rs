@@ -60,7 +60,7 @@ impl From<&DirtyEntry> for DirtyReport {
     fn from(e: &DirtyEntry) -> Self {
         DirtyReport {
             label: e.action.label.clone(),
-            script: matches!(e.action.kind, UndoRt::Script(..)),
+            script: matches!(e.action.kind, UndoRt::Script(..) | UndoRt::Native(..)),
             origin: e.action.origin.clone(),
             captures: e.action.captures.clone(),
             span: e.action.span,
@@ -115,6 +115,33 @@ pub fn register_script(
         origin: "registered by `undo(...)`".into(),
         captures: Vec::new(),
         kind: UndoRt::Script(f, unit),
+        env: Vec::new(),
+        span: span.unwrap_or(Span::new(0, 0, 0)),
+    });
+    true
+}
+
+/// Register a cleanup implemented in Rust, such as restoring a file `write_file` overwrote.
+/// Returns whether it was registered (a scope was open).
+pub fn register_native(
+    shared: &Shared,
+    label: String,
+    f: Rc<dyn Fn() -> Result<(), String>>,
+    span: Option<Span>,
+) -> bool {
+    if shared.flags.unwinding.get() > 0 {
+        return false;
+    }
+    let mut state = shared.state.borrow_mut();
+    let Some(top) = state.scopes.last_mut() else {
+        state.skipped_undos.push(label);
+        return false;
+    };
+    top.actions.push(UndoAction {
+        label,
+        origin: "registered by a built-in".into(),
+        captures: Vec::new(),
+        kind: UndoRt::Native(f),
         env: Vec::new(),
         span: span.unwrap_or(Span::new(0, 0, 0)),
     });
@@ -224,6 +251,7 @@ fn run_once(
                     shared.state.borrow().last_http_transient,
                 )
             }),
+        UndoRt::Native(f) => f().map_err(|e| (Failure::new(e), false)),
         UndoRt::Call(unit) => shared
             .eval(engine, *unit, &mut scope)
             .map(|_| ())

@@ -72,6 +72,9 @@ pub struct Session {
     timeouts: Rc<Timeouts>,
     /// `browser().route(…)`: routes for every page of the context.
     routes: Routes,
+    /// `browser(ignore_requests: […])`: failures that are expected (a login page answered
+    /// with 401, say), kept out of failure reports.
+    ignored: RefCell<Vec<regex::Regex>>,
 }
 
 impl Session {
@@ -89,6 +92,7 @@ impl Session {
             pages: RefCell::default(),
             timeouts: Rc::default(),
             routes: Routes::default(),
+            ignored: RefCell::default(),
         })
     }
 
@@ -181,10 +185,29 @@ impl Session {
             url: read("location.href"),
             title: read("document.title"),
             screenshot,
-            console: page.console(),
-            failed_requests: page.failed_requests(),
+            console: page
+                .console()
+                .into_iter()
+                .filter(|line| !self.is_ignored(console_url(line)))
+                .collect(),
+            failed_requests: page
+                .failed_requests()
+                .into_iter()
+                .filter(|line| !self.is_ignored(line.rsplit(' ').next()))
+                .collect(),
         }));
     }
+
+    fn is_ignored(&self, url: Option<&str>) -> bool {
+        url.is_some_and(|u| self.ignored.borrow().iter().any(|re| re.is_match(u)))
+    }
+}
+
+/// The URL Chrome names at the end of a "Failed to load resource: … (url)" console line.
+fn console_url(line: &str) -> Option<&str> {
+    line.strip_suffix(')')
+        .and_then(|l| l.rsplit_once(" ("))
+        .map(|(_, url)| url)
 }
 
 /// A file name for a case's screenshot: the test file and name, plus a short hash of the case.
@@ -421,12 +444,26 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     let s = shared.clone();
     engine.register_fn("browser__kw", move |opts: Map| -> R<BrowserHandle> {
         let session = session(&s)?;
-        let (_, named) = options(opts, &["timeout", "expect_timeout"], "browser")?;
+        let (_, named) = options(
+            opts,
+            &["timeout", "expect_timeout", "ignore_requests"],
+            "browser",
+        )?;
         for (k, v) in named {
-            let d = crate::testing::parse_duration(&v)?;
             match k.as_str() {
-                "timeout" => session.timeouts.action.set(d),
-                _ => session.timeouts.expect.set(d),
+                "timeout" => session
+                    .timeouts
+                    .action
+                    .set(crate::testing::parse_duration(&v)?),
+                "expect_timeout" => session
+                    .timeouts
+                    .expect
+                    .set(crate::testing::parse_duration(&v)?),
+                _ => session.ignored.borrow_mut().extend(
+                    strings(&v, "`ignore_requests`")?
+                        .iter()
+                        .map(|g| route::glob_regex(g)),
+                ),
             }
         }
         Ok(BrowserHandle(session))
@@ -526,6 +563,8 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     });
 
     // --- Pages ----------------------------------------------------------------------------
+    let s = shared.clone();
+    engine.register_fn("reload", move |p: &mut Page| p.reload(&s));
     let s = shared.clone();
     engine.register_fn("navigate", move |p: &mut Page, url: &str| {
         p.navigate(&s, url)

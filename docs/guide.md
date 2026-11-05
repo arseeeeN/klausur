@@ -78,6 +78,9 @@ let base = env("API_URL", "http://localhost:8080")
 - **Defaults keep call sites short.** `jwt = ()` leaves the header out entirely: a header whose
   interpolation is null isn't sent.
 - **Capture what tests need** with `let`: `createUser("bob").id`.
+- **Paths go through `url_path`.** Every interpolation after the first in a URL is encoded as
+  one component, so `/` becomes `%2F`. For a value that is itself a path (a JCR node, a file),
+  write `{{base}}/nodes{{url_path(node)}}`: each segment encoded, the slashes kept.
 - **Slow endpoints get a timeout**, so a hang fails fast: `@chat(q) timeout("90s") { … }`.
 - **Background work is waited for with `poll`**, never with `sleep`:
   `@job(id) poll(until: body.state == "done", every: "500ms", within: "30s") { … }`.
@@ -144,6 +147,11 @@ test "roles" (role, can_delete) cases [
   `runs(n)`; a failure prints the seed that reproduces it.
 - **`parallel` only for tests that don't care what else runs.** A test that checks a global
   count ("exactly one document exists") must stay serial. Unmarked tests run alone.
+- **Fixture files restore themselves**: `write_file(path, content, undo: true)` puts back what was
+  there (or removes the file) when the case ends, so a fixture can't destroy an existing file.
+- **Check the service's log** when "no new errors" is part of done:
+  `let log = watch_file(log_path)` before, `expect !log.lines().some(|l| l.contains("ERROR"))`
+  after. `today()` helps with dated log names.
 - **Know when a test is flaky by nature** (an LLM's answer): check for facts, not wording, and
   use `retries(1)` sparingly. `log(…)` what the service said, so a failure shows it.
 - **A test for a known bug** stays in the suite: `skip("BUG-123: …")` until it's fixed, so the

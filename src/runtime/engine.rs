@@ -399,6 +399,17 @@ fn register_functions(engine: &mut Engine, shared: &Rc<Shared>) {
         s.env.get(name).map_or(default, Dynamic::from)
     });
     engine.register_fn("raw", |v: Dynamic| RawText(value::to_text(&v)));
+    // A path for a URL: each segment percent-encoded, the slashes kept. `/a b/c` → `/a%20b/c`.
+    engine.register_fn("url_path", |v: Dynamic| {
+        let text = value::to_text(&v);
+        let segments: Vec<String> = text
+            .split('/')
+            .map(|s| {
+                percent_encoding::utf8_percent_encode(s, super::request::COMPONENT).to_string()
+            })
+            .collect();
+        RawText(segments.join("/"))
+    });
     let s = shared.clone();
     engine.register_fn("read_file", move |path: &str| read(&s, path));
     let s = shared.clone();

@@ -379,7 +379,26 @@ impl Page {
         if let Some(e) = r.get("errorText").and_then(Json::as_str) {
             return Err(fail(format!("couldn't open {url}: {e}")));
         }
-        self.wait_for(shared, &format!("navigate(\"{url}\")"), || {
+        // Only the `#fragment` changed: the same document stays, and no load follows. Chrome
+        // says so by leaving out the loader id. Apps that route by fragment react to
+        // `hashchange` themselves; wait for them on the page, like after a click.
+        if r.get("loaderId").is_none() {
+            return Ok(());
+        }
+        self.wait_loaded(shared, &format!("navigate(\"{url}\")"))
+    }
+
+    /// Reload the page, like the browser's reload button, and wait as `navigate` does.
+    pub(super) fn reload(&self, shared: &Shared) -> R<()> {
+        self.eval("window.__klausurOld = true")?;
+        self.call("Page.reload", json!({}))?;
+        self.wait_loaded(shared, "reload()")
+    }
+
+    /// After a new document started loading: wait for its `load`, then for the network to
+    /// settle.
+    fn wait_loaded(&self, shared: &Shared, action: &str) -> R<()> {
+        self.wait_for(shared, action, || {
             // During the switch to the new document an evaluation can fail; that's "not yet".
             let state = self
                 .eval("window.__klausurOld ? 'old' : document.readyState")
@@ -400,7 +419,7 @@ impl Page {
             }
             if let Err(stop) = crate::runtime::request::wait(shared, POLL) {
                 return Err(fail(format!(
-                    "{} while `navigate(\"{url}\")` waited for the page to settle",
+                    "{} while `{action}` waited for the page to settle",
                     stopped(stop)
                 )));
             }

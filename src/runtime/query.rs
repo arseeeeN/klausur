@@ -25,6 +25,7 @@ pub fn register(engine: &mut Engine) {
         collapse(&html_text(doc.root_element()))
     });
     engine.register_fn("xml_select", |xml: &str, css: &str| xml_select(xml, css));
+    engine.register_fn("json_ld", |html: &str| json_ld(html));
     engine.register_fn("json_path", |value: Dynamic, path: &str| {
         json_path(&value, path)
     });
@@ -151,7 +152,10 @@ fn html_select(html: &str, css: &str) -> R<Array> {
                 ("tag", el.value().name().to_string().into()),
                 ("text", collapse(&html_text(el)).into()),
                 ("attrs", attrs.into()),
+                // `html` is the outer HTML; it came first, so it stays as an alias.
                 ("html", el.html().into()),
+                ("outer_html", el.html().into()),
+                ("inner_html", el.inner_html().into()),
             ])
             .into()
         })
@@ -318,10 +322,50 @@ fn xml_select(xml: &str, css: &str) -> R<Array> {
                 ("text", collapse(&text).into()),
                 ("attrs", attrs.into()),
                 ("xml", xml[node.range()].to_string().into()),
+                ("outer_xml", xml[node.range()].to_string().into()),
+                ("inner_xml", inner_xml(xml, node).into()),
             ])
             .into()
         })
         .collect())
+}
+
+/// The source between an element's start and end tags.
+fn inner_xml(xml: &str, node: roxmltree::Node) -> String {
+    match (node.first_child(), node.last_child()) {
+        (Some(first), Some(last)) => xml[first.range().start..last.range().end].to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The JSON-LD of a page: every `<script type="application/ld+json">`, parsed. A script that
+/// holds an array contributes its items.
+fn json_ld(html: &str) -> R<Array> {
+    let list = parse_selector("script[type='application/ld+json']")?;
+    let doc = Html::parse_document(html);
+    let mut out = Array::new();
+    for (i, el) in doc
+        .root_element()
+        .descendants()
+        .filter_map(ElementRef::wrap)
+        .filter(|el| matches(&list, el))
+        .enumerate()
+    {
+        // The raw text: `text` in `html_select` collapses whitespace, which changes strings.
+        let raw: String = el.text().collect();
+        let value: serde_json::Value = serde_json::from_str(raw.trim()).map_err(|e| {
+            fail(format!(
+                "JSON-LD script {} isn't valid JSON: {e}\n  in: {}",
+                i + 1,
+                truncate(raw.trim(), 120)
+            ))
+        })?;
+        match value {
+            serde_json::Value::Array(items) => out.extend(items.iter().map(from_json)),
+            v => out.push(from_json(&v)),
+        }
+    }
+    Ok(out)
 }
 
 // --- JSONPath ------------------------------------------------------------------------------
@@ -403,6 +447,45 @@ mod tests {
         assert_eq!(xml_select(xml, "entry:nth-child(2)").unwrap().len(), 1);
         assert_eq!(xml_select(xml, "link:empty").unwrap().len(), 2);
         assert!(xml_select("<a>", "a").is_err());
+    }
+
+    #[test]
+    fn inner_and_outer_markup() {
+        let html = r#"<div id="d"><p>One <b>bold</b></p></div>"#;
+        let d = html_select(html, "#d").unwrap();
+        assert_eq!(tags(&d, "inner_html"), ["<p>One <b>bold</b></p>"]);
+        assert_eq!(
+            tags(&d, "outer_html"),
+            [r#"<div id="d"><p>One <b>bold</b></p></div>"#]
+        );
+        assert_eq!(tags(&d, "html"), tags(&d, "outer_html"));
+        let xml = "<a><b x='1'>t<c/></b><e/></a>";
+        let b = xml_select(xml, "b").unwrap();
+        assert_eq!(tags(&b, "inner_xml"), ["t<c/>"]);
+        assert_eq!(tags(&b, "outer_xml"), ["<b x='1'>t<c/></b>"]);
+        assert_eq!(tags(&xml_select(xml, "e").unwrap(), "inner_xml"), [""]);
+    }
+
+    #[test]
+    fn json_ld_parses_every_script() {
+        let html = r#"<html><head>
+            <script type="application/ld+json">{"@type": "Organization", "name": "A  B"}</script>
+            <script type="application/ld+json">[{"@type": "Product"}, {"@type": "Offer"}]</script>
+            <script>var x = 1</script></head></html>"#;
+        let found = json_ld(html).unwrap();
+        let types: Vec<String> = found
+            .iter()
+            .map(|v| v.clone().cast::<Map>()["@type"].to_string())
+            .collect();
+        assert_eq!(types, ["Organization", "Product", "Offer"]);
+        // Whitespace inside strings is kept, unlike `html_select(…).text`.
+        assert_eq!(found[0].clone().cast::<Map>()["name"].to_string(), "A  B");
+        let broken = r#"<script type="application/ld+json">{"a": }</script>"#;
+        let e = match *json_ld(broken).unwrap_err() {
+            EvalAltResult::ErrorRuntime(v, _) => v.cast::<Failure>().message,
+            other => other.to_string(),
+        };
+        assert!(e.contains("JSON-LD script 1 isn't valid JSON"), "{e}");
     }
 
     #[test]

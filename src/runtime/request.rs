@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 /// Characters left alone in URL components: RFC 3986 "unreserved".
-const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
+pub const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'.')
     .remove(b'_')
@@ -51,6 +51,8 @@ pub enum UndoRt {
     Call(usize),
     /// `undo(|| ...)` in a script, with the unit that defined the closure (none for the library).
     Script(rhai::FnPtr, Option<usize>),
+    /// Cleanup a built-in registered, e.g. `write_file(…, undo: true)` restoring a file.
+    Native(Rc<dyn Fn() -> Result<(), String>>),
 }
 
 pub struct BodyRt {

@@ -1522,6 +1522,25 @@ test "locators take no selector" {
     let page = site().open("http://klausur.test/")
     page.locator("body").click("#load")
 }
+
+test "fragment navigation and reload" timeout("10s") {
+    let page = site().open("http://klausur.test/")
+    page.evaluate("window.marker = 1")
+    page.navigate("http://klausur.test/#section")
+    expect page.url.ends_with("#section")
+    expect page.evaluate("window.marker") == 1
+    page.reload()
+    expect page.evaluate("window.marker ?? null") == null
+    expect page.url.ends_with("#section")
+}
+
+test "expected failures stay out of the report" {
+    browser(ignore_requests: ["**/api/data*"])
+    let page = site().open("http://klausur.test/")
+    page.route("**/api/data*", #{ status: 500 })
+    page.click("#load")
+    expect page.text("#out") == "it worked"
+}
 "##,
     );
     let out = p.run(&server, &["test", "r.test.kl"]);
@@ -1536,7 +1555,82 @@ test "locators take no selector" {
         "✗ failed requests show in the report",
         "500 POST http://klausur.test/api/data?n=1",
         "a locator's `click` takes no selector",
-        "2 passed, 2 failed",
+        "✓ fragment navigation and reload",
+        "✗ expected failures stay out of the report",
+        "3 passed, 3 failed",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+    let ignored = out
+        .stdout
+        .split("── ")
+        .find(|s| s.starts_with("expected failures stay out of the report"))
+        .unwrap_or_default();
+    assert!(ignored.contains("screenshot:"), "{ignored}");
+    assert!(!ignored.contains("api/data"), "{ignored}");
+}
+
+#[test]
+fn helpers_from_the_magnolia_suite() {
+    let server = start();
+    let p = project(
+        "magnolia-helpers",
+        r##"
+@echoPath(workspace, path) {
+    connection { GET {{base}}/echo/{{workspace}}{{url_path(path)}} }
+}
+
+test "url_path keeps slashes and encodes segments" {
+    expect echoPath("website", "/fast forward/demo/main").body.path == "/echo/website/fast%20forward/demo/main"
+}
+
+test "write_file with undo restores or removes" {
+    write_file("fixtures/existing.txt", "original")
+    scoped(|| {
+        write_file("fixtures/existing.txt", "changed", undo: true)
+        write_file("fixtures/new.txt", "new", undo: true)
+        expect read_file("fixtures/existing.txt") == "changed"
+    })
+    expect read_file("fixtures/existing.txt") == "original"
+    expect !file_exists("fixtures/new.txt")
+}
+
+test "dates" {
+    expect regex_match(today(), "^\\d{4}-\\d{2}-\\d{2}$")
+    expect now().starts_with(today())
+    expect now("%Y") == today().sub_string(0, 4)
+}
+
+test "a bad date format fails" { now("%Q") }
+
+test "watch_file returns what was appended" {
+    write_file("server.log", "old line\n")
+    let log = watch_file("server.log")
+    expect log.lines() == []
+    write_file("server.log", "old line\nERROR new one\n\nINFO fine\n")
+    expect log.lines() == ["ERROR new one", "INFO fine"]
+    expect log.lines().filter(|l| l.contains("ERROR")).len() == 1
+}
+
+test "json_ld and inner html" {
+    let html = `<head><script type="application/ld+json">{"@type": "Organization", "name": "A  B"}</script></head><div id="d"><b>x</b></div>`
+    expect json_ld(html).map(|x| x["@type"]) == ["Organization"]
+    expect json_ld(html)[0].name == "A  B"
+    let d = html_select(html, "#d")[0]
+    expect d.inner_html == "<b>x</b>" && d.outer_html == d.html
+}
+"##,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ url_path keeps slashes and encodes segments",
+        "✓ write_file with undo restores or removes",
+        "✓ dates",
+        "✗ a bad date format fails",
+        "`%Q` isn't a valid date format",
+        "✓ watch_file returns what was appended",
+        "✓ json_ld and inner html",
     ] {
         assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
     }

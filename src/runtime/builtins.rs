@@ -101,6 +101,50 @@ pub fn guess_content_type(name: &str) -> &'static str {
     }
 }
 
+/// `watch_file(path)`: remembers how long a file is, so `.lines()` / `.text()` return what was
+/// appended since, e.g. to check a service's log for new errors during a test.
+#[derive(Clone)]
+pub struct FileWatch {
+    path: std::path::PathBuf,
+    start: u64,
+}
+
+impl FileWatch {
+    fn appended(&self) -> R<String> {
+        let bytes = match std::fs::read(&self.path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Err(e) => {
+                return Err(
+                    Failure::new(format!("can't read {}: {e}", self.path.display())).into_err(),
+                );
+            }
+        };
+        // A file that got shorter was rotated or truncated: all of it is new.
+        let start = if (bytes.len() as u64) < self.start {
+            0
+        } else {
+            self.start as usize
+        };
+        Ok(String::from_utf8_lossy(&bytes[start..]).into_owned())
+    }
+}
+
+/// The local time in a strftime format; an invalid pattern is an error, not a panic.
+fn local_time(format: &str) -> R<String> {
+    use chrono::format::{Item, StrftimeItems};
+    let items: Vec<Item> = StrftimeItems::new(format).collect();
+    if items.iter().any(|i| matches!(i, Item::Error)) {
+        return Err(Failure::new(format!(
+            "`{format}` isn't a valid date format; use strftime patterns such as \"%Y-%m-%d %H:%M\""
+        ))
+        .into_err());
+    }
+    Ok(chrono::Local::now()
+        .format_with_items(items.into_iter())
+        .to_string())
+}
+
 pub(crate) fn bytes_of(v: &Dynamic) -> Vec<u8> {
     if v.is_blob() {
         return v.clone().cast::<Blob>();
@@ -344,6 +388,86 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
             Ok(full.to_string_lossy().into_owned())
         },
     );
+    // `write_file(path, content, undo: true)`: the undo restores what was there before, or
+    // removes the file if it's new, so a fixture can't destroy a file that already existed.
+    let s = shared.clone();
+    engine.register_fn(
+        "write_file__kw",
+        move |ncx: NativeCallContext, opts: rhai::Map| -> R<String> {
+            let mut opts = opts;
+            let (Some(path), Some(content)) = (opts.remove("_0"), opts.remove("_1")) else {
+                return Err(Failure::new("`write_file` needs a path and content").into_err());
+            };
+            let undo = match opts.remove("undo") {
+                None => false,
+                Some(v) => v.as_bool().map_err(|_| {
+                    Failure::new("`write_file`'s `undo` takes true or false").into_err()
+                })?,
+            };
+            if let Some(k) = opts.keys().next() {
+                return Err(
+                    Failure::new(format!("`write_file` takes `undo`, not `{k}`")).into_err(),
+                );
+            }
+            let full = s.resolve_path(&path.to_string());
+            let before = std::fs::read(&full).ok();
+            if let Some(dir) = full.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| {
+                    Failure::new(format!("can't create {}: {e}", dir.display())).into_err()
+                })?;
+            }
+            std::fs::write(&full, bytes_of(&content)).map_err(|e| {
+                Failure::new(format!("can't write {}: {e}", full.display())).into_err()
+            })?;
+            let full = dunce::canonicalize(&full).unwrap_or(full);
+            if undo {
+                let target = full.clone();
+                let label = match before {
+                    Some(_) => format!("restore {}", full.display()),
+                    None => format!("remove {}", full.display()),
+                };
+                let restore: Rc<dyn Fn() -> Result<(), String>> = Rc::new(move || {
+                    let result = match &before {
+                        Some(bytes) => std::fs::write(&target, bytes),
+                        None => match std::fs::remove_file(&target) {
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                            r => r,
+                        },
+                    };
+                    result.map_err(|e| format!("can't restore {}: {e}", target.display()))
+                });
+                let span = ncx
+                    .call_source()
+                    .and_then(|src| s.map_pos(src, ncx.call_position()));
+                super::undo::register_native(&s, label, restore, span);
+            }
+            Ok(full.to_string_lossy().into_owned())
+        },
+    );
+    // Local date and time: `now()` is ISO 8601 with the offset, `now("%d.%m.%Y")` uses strftime
+    // patterns, `today()` is `2026-11-05`.
+    engine.register_fn("now", || {
+        chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+    });
+    engine.register_fn("now", |format: &str| -> R<String> { local_time(format) });
+    engine.register_fn("today", || {
+        chrono::Local::now().format("%Y-%m-%d").to_string()
+    });
+    engine.register_type_with_name::<FileWatch>("file_watch");
+    let s = shared.clone();
+    engine.register_fn("watch_file", move |path: &str| {
+        let path = s.resolve_path(path);
+        let start = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        FileWatch { path, start }
+    });
+    engine.register_fn("text", |w: &mut FileWatch| w.appended());
+    engine.register_fn("lines", |w: &mut FileWatch| -> R<Array> {
+        Ok(w.appended()?
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| Dynamic::from(l.to_string()))
+            .collect())
+    });
     let s = shared.clone();
     engine.register_fn("remove_file", move |path: &str| -> R<bool> {
         let full = s.resolve_path(path);

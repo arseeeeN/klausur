@@ -175,6 +175,8 @@ The HTTP method can be a variable, written as one interpolation in place of the 
   works. Every later interpolation is percent-encoded as a URL component: everything except
   `A–Z a–z 0–9 - . _ ~`.
 - `raw(x)` inserts `x` verbatim everywhere: no URL encoding, and raw JSON in JSON bodies.
+- `url_path(x)` inserts a path into a URL: each segment percent-encoded, the slashes kept, so
+  `{{base}}/.rest/nodes/v1/website{{url_path(page)}}` works for `page = "/my site/news"`.
 - Inside a JSON string literal, `"id-{{x}}"` inserts the value escaped, without quotes.
 - After interpolation, a JSON body must be valid JSON; otherwise the request fails before
   it is sent.
@@ -307,13 +309,17 @@ fn onboard(name) {
 | `gen::…` | Generators (§6.2) |
 | `file(path)`, `file_from(name, content[, type])`, `read_blob(path)` | Files to upload; the content type is guessed from the name |
 | `write_file(path, content)`, `remove_file(path)`, `file_exists(path)` | `content` is a string or a blob, and missing folders are created. `write_file` returns the absolute path. `remove_file` returns whether the file existed |
+| `write_file(path, content, undo: true)` | Also registers an undo that puts back what was there: the earlier content, or no file |
+| `watch_file(path)` | Remembers how long a file is; `.lines()` and `.text()` return what was appended since (from the start if the file was rotated). For "no new errors in the service's log" |
+| `now()`, `now(format)`, `today()` | Local time: ISO 8601 with the offset, a strftime pattern (`"%d.%m.%Y"`), or `2026-11-05` |
 | `undo(\|\| …)`, `undo(label, \|\| …)` | Register a cleanup that isn't tied to a request (§8.1) |
 | `multipart(#{ … })` | A `multipart/form-data` body (§4.3) |
 | `sse_parse(text)` | Server-sent events as `[#{event, data, id}]`. Responses with `text/event-stream` get them as `events` automatically |
 | `base64_encode`, `base64url_encode`, `base64_decode`, `base64_decode_blob` | |
 | `jwt_decode(token)` | `#{header, claims, signature}`, without verifying the signature |
 | `regex_match`, `regex_find`, `regex_find_all`, `regex_captures`, `regex_replace` | `(text, pattern, …)`; named groups in `regex_captures` become a map |
-| `html_select(html, css)`, `xml_select(xml, css)` | Elements matching a CSS selector, as `[#{tag, text, attrs, html}]` (`xml` instead of `html` for XML). `text` has its whitespace collapsed. XML namespaces are ignored: `entry > title` matches Atom's `<entry>` |
+| `html_select(html, css)`, `xml_select(xml, css)` | Elements matching a CSS selector, as `[#{tag, text, attrs, inner_html, outer_html}]` (`inner_xml`, `outer_xml` for XML; `html`/`xml` are the outer markup too). `text` has its whitespace collapsed. XML namespaces are ignored: `entry > title` matches Atom's `<entry>` |
+| `json_ld(html)` | The page's JSON-LD: every `<script type="application/ld+json">`, parsed; a script holding an array contributes its items |
 | `html_text(html)` | The visible text of a page, without `<head>`, scripts and styles |
 | `json_path(value, path)` | Every value a JSONPath (RFC 9535) selects, as an array: `json_path(body, "$..url")`. The leading `$` is optional |
 | `s.trimmed()`, `a.sorted()`, `a.sorted(\|x, y\| …)`, `a.reversed()` | Changed copies. Rhai's own `trim`, `sort` and `reverse` change the value in place and return `()`, so `let t = s.trim()` is `()`. For case, Rhai's `to_lower()` and `to_upper()` already return copies |
@@ -843,7 +849,8 @@ test "a search shows the page that was just indexed" rollback writer() {
   or storage. Its pages close when the case ends, after its undo actions. One Chrome serves the
   whole run, and `parallel` cases each get their own context in it.
 - `browser(timeout: "10s", expect_timeout: "30s")` sets how long actions wait (default 30 s)
-  and how long page expectations retry (default 5 s). Playwright's actions have no timeout of
+  and how long page expectations retry (default 5 s). `ignore_requests: ["**/login*"]` keeps
+  expected failures (a login page answered with 401, say) out of failure reports. Playwright's actions have no timeout of
   their own and end with the test's; klausur tests have no timeout by default, hence the 30 s.
 - `browser().open(url)` opens a page and waits until it has loaded and its network has been
   quiet for 300 ms (at most 3 s). Playwright waits for `load` only, but frameworks such as
@@ -895,7 +902,8 @@ is `page.locator(sel).click()`.
 
 | On a page | Does |
 |---|---|
-| `navigate(url)` | Load another URL in the same page |
+| `navigate(url)` | Load another URL in the same page. When only the `#fragment` changes, it returns right away: the document stays, and no load follows |
+| `reload()` | Reload the page and wait as `navigate` does |
 | `url`, `title`, `html()` | The page's URL, title and HTML; `html_select(page.html(), sel)` works |
 | `evaluate(js)` | Run JavaScript in the page and return its result (promises are awaited) |
 | `console()` | Console errors and warnings, uncaught exceptions and dialogs so far |

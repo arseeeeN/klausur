@@ -209,11 +209,7 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
             engine.register_global_module(ast.shared_lib().clone());
         }
         Err(e) => {
-            let span = lib.map_position(e.1);
-            let diag = span.map_or_else(
-                || Diag::new(e.0.to_string()),
-                |s| Diag::at(s, e.0.to_string()),
-            );
+            let diag = parse_diag(&e, lib.map_position(e.1));
             return Err(LoadError {
                 sources: take_sources(shared),
                 diags: vec![diag],
@@ -514,15 +510,7 @@ impl Compiler<'_> {
                 Some(id)
             }
             Err(e) => {
-                let mut message = e.0.to_string();
-                if message.contains("'null'") || message.contains("'nil'") {
-                    message.push_str(" (use `()` or `null` only as a value)");
-                }
-                let diag = match code.map_position(e.1) {
-                    Some(s) => Diag::at(s, message),
-                    None => Diag::new(message),
-                };
-                self.diags.push(diag);
+                self.diags.push(parse_diag(&e, code.map_position(e.1)));
                 None
             }
         }
@@ -1076,4 +1064,30 @@ impl Compiler<'_> {
         out.push_gen(")");
         Ok(())
     }
+}
+
+/// A Rhai parse error as a diagnostic, with help where the message alone isn't enough.
+fn parse_diag(e: &rhai::ParseError, span: Option<Span>) -> Diag {
+    let mut message = e.0.to_string();
+    if message.contains("'null'") || message.contains("'nil'") {
+        message.push_str(" (use `()` or `null` only as a value)");
+    }
+    let mut d = match span {
+        Some(s) => Diag::at(s, message),
+        None => Diag::new(message),
+    };
+    if let rhai::ParseErrorType::Reserved(word) = &*e.0 {
+        let instead = match word.as_str() {
+            "call" => "`invocation`, or say what is called: `macro_call`",
+            "match" => "`found`, `hit` or `kind`",
+            "case" => "`entry` or `row`",
+            "default" => "`fallback`",
+            "new" => "`created` or `fresh`",
+            _ => "a more specific name",
+        };
+        d = d.help(format!(
+            "`{word}` is reserved in Rhai and can't name a variable or parameter; try {instead}"
+        ));
+    }
+    d
 }
