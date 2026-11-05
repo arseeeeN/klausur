@@ -127,10 +127,12 @@ when a rollback failed and may have left state behind.
 
 ## Documentation
 
+- [docs/guide.md](docs/guide.md) shows how to build a suite: layout, patterns, turning
+  requirements into tests, debugging and CI. Start here.
 - [SPEC.md](SPEC.md) describes the language and the CLI in full, and §11 lists what's
   implemented.
 - [GAPS.md](GAPS.md) lists what testing a real service turned up.
-- [BACKLOG.md](BACKLOG.md) has the plans for after this release, such as browser tests.
+- [BACKLOG.md](BACKLOG.md) has what's planned next.
 
 ## Editor support
 
