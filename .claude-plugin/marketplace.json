@@ -1,0 +1,14 @@
+{
+  "name": "klausur",
+  "owner": {
+    "name": "Arsenije Jevric"
+  },
+  "description": "Claude Code support for klausur, the API and browser test tool",
+  "plugins": [
+    {
+      "name": "klausur",
+      "source": "./editors/claude",
+      "description": "Write, run and debug klausur tests, and turn ticket or pull-request requirements into tests"
+    }
+  ]
+}

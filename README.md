@@ -140,6 +140,20 @@ when a rollback failed and may have left state behind.
 [`editors/tree-sitter-klausur`](editors/tree-sitter-klausur) is a tree-sitter grammar with
 highlight, fold and indent queries. It's also a Neovim plugin, and its README shows the setup.
 
+## Claude Code
+
+[`editors/claude`](editors/claude) is a Claude Code plugin with a `klausur` skill: it teaches
+Claude the language and its pitfalls, how to turn a ticket or pull request into tests, and how to
+read failures, so it can write and run a suite without further help. Install it in Claude Code:
+
+```
+/plugin install klausur --marketplace arseeeeN/klausur
+```
+
+On Claude Code before 2.1.275, add the marketplace first:
+`/plugin marketplace add arseeeeN/klausur`, then `/plugin install klausur@klausur`. The skill
+follows this repository's `main`; `/plugin marketplace update klausur` fetches the latest.
+
 ## License
 
 [MIT](LICENSE)

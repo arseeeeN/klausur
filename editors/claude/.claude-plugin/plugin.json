@@ -1,0 +1,10 @@
+{
+  "name": "klausur",
+  "description": "Write, run and debug API and browser end-to-end tests with klausur, and turn ticket or pull-request requirements into tests",
+  "author": {
+    "name": "Arsenije Jevric"
+  },
+  "homepage": "https://github.com/arseeeeN/klausur",
+  "repository": "https://github.com/arseeeeN/klausur",
+  "license": "MIT"
+}
