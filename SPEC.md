@@ -305,6 +305,7 @@ fn onboard(name) {
 | `log(x)`, `print(x)` | Add to the case log, shown on failure or with `-v`. Maps and arrays are shown as JSON, here and in `${…}` |
 | `fail(msg)` | Fail with a message |
 | `uuid()` | |
+| `unique()`, `unique(prefix)` | 8 random hex characters, or `prefix-` and them: data no other test or earlier run uses. From the case's generator, so `--seed` reproduces it. A suite's own `fn unique` replaces it |
 | `sleep(ms)` | Wakes up early for Ctrl-C and the test's `timeout`. To wait for a condition, use `poll` (§7.3) |
 | `gen::…` | Generators (§6.2) |
 | `file(path)`, `file_from(name, content[, type])`, `read_blob(path)` | Files to upload; the content type is guessed from the name |
@@ -484,6 +485,8 @@ These are implemented in Rust on top of the same API:
 - `only`
 - `label(expr)`: names each case in the report (§6.3)
 - `parallel`: the test's cases may run at the same time as other `parallel` cases (§7.4)
+- `parallel("llm")`, `parallel("db", 2)`: parallel, but at most 1 (or 2) cases of the group at
+  once, e.g. for an LLM or a rate-limited service, while other `parallel` tests still overlap
 
 ### 7.3 Modifiers on requests and functions
 
@@ -560,6 +563,9 @@ test "indexing needs the write role" (role in ["none", "reader", "admin"]) paral
   every earlier `parallel` test finished and cleaned up.
 - Results are printed in declaration order, whatever order they finish in.
 - `-j 1` runs everything serially.
+- A group (`parallel("llm", 1)`) caps how many of its cases run at once, on top of `-j`. Tests
+  name the group they share; each case is held back while its group is at the limit the test
+  gives.
 
 Each worker thread loads its own copy of the files. Top-level `let`s are evaluated once per
 worker, and `cases` sources are read once per worker. With `-v`, the request trace of a
@@ -737,7 +743,10 @@ should grow beyond dotenv, e.g. with per-environment base URLs.)*
 ```
 klausur run  <file>[#name] [-a k=v ...] [--env NAME] [--timeout SECS] [-q] [--headed]
 klausur test [paths/filters] [--seed N] [--case k=v|label] [--tag T] [--on-dirty=abort|continue] [--env NAME] [--timeout SECS] [-j N] [-v] [--headed]
+             [--fail-fast] [--junit FILE] [--watch]
 klausur list [paths]
+klausur update
+klausur init [DIR] [--auth basic|bearer]
 klausur recover [--all | --discard <run-id>]   # post-v1
 klausur fmt  [paths]                           # post-v1
 ```
@@ -753,7 +762,20 @@ klausur fmt  [paths]                           # post-v1
   recursively for `*.kl`), and every other argument as a test-name filter (substring). It
   defaults to the current directory. Only tests from the given files run; tests in
   imported files don't. `only` on any test narrows the run to the `only` tests.
+- **`test` options for CI and writing tests**: `--fail-fast` stops scheduling after the first
+  failure; `--junit FILE` also writes a JUnit XML report (one `<testsuite>` per file, failures
+  with the same text as the terminal, dirty cases as failures); `--watch` runs again whenever
+  something in the test folders changes (not `klausur-results/`, hidden or editor swap files),
+  until Ctrl-C.
 - **`list`** shows the requests (with signatures and protocol lines), functions and tests.
+- **`init`** creates a suite to start from in `DIR` (default `src/test/klausur`): `api.kl` with
+  a placeholder `BASE_URL` and an example request, `lib.kl`, an example test, a README and a
+  `.gitignore`. `--auth basic` or `--auth bearer` adds a working `logged_in()` modifier; without
+  it, `lib.kl` holds a commented example. Existing files are kept.
+- **`update`** replaces the binary with the latest release, after checking it against the
+  release's `SHA256SUMS`. After `test` and `run`, a line on stderr says when a newer release is
+  out; the check asks GitHub at most once a day, in the background, and never delays a run. It's
+  off when `CI` or `KLAUSUR_NO_UPDATE_CHECK` is set.
 
 Output: human-readable. `--reporter junit|tap|json` for CI is *(post-v1)*.
 

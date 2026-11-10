@@ -86,6 +86,8 @@ pub struct DefData {
     pub only: bool,
     /// `parallel`: may run at the same time as other `parallel` tests.
     pub parallel: bool,
+    /// `parallel("llm", 1)`: at most this many cases of the group run at once.
+    pub group: Option<(String, usize)>,
     pub tags: Vec<String>,
 }
 
@@ -193,6 +195,18 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     engine.register_fn("only", |t: &mut TestDef| t.0.borrow_mut().only = true);
     engine.register_fn("parallel", |t: &mut TestDef| {
         t.0.borrow_mut().parallel = true
+    });
+    // `parallel("llm")`: parallel with other tests, but one case of the group at a time;
+    // `parallel("db", 2)`: at most two.
+    engine.register_fn("parallel", |t: &mut TestDef, group: &str| {
+        let mut d = t.0.borrow_mut();
+        d.parallel = true;
+        d.group = Some((group.to_string(), 1));
+    });
+    engine.register_fn("parallel", |t: &mut TestDef, group: &str, limit: i64| {
+        let mut d = t.0.borrow_mut();
+        d.parallel = true;
+        d.group = Some((group.to_string(), limit.max(1) as usize));
     });
     engine.register_fn("tags", |t: &mut TestDef, tags: Array| {
         t.0.borrow_mut()

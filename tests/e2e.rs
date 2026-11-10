@@ -1,5 +1,6 @@
 mod support;
 
+use std::path::{Path, PathBuf};
 use support::{Project, start};
 
 const USERS: &str = r#"
@@ -1633,5 +1634,377 @@ test "json_ld and inner html" {
         "✓ json_ld and inner html",
     ] {
         assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+}
+
+/// A fake GitHub release page for `latest` = 99.0.0, with the asset this platform downloads.
+fn release_server(
+    asset_bytes: &'static [u8],
+    sums: impl Fn(&str) -> String + Send + 'static,
+) -> String {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/releases", server.server_addr().to_ip().unwrap());
+    let asset = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "klausur-x86_64-unknown-linux-musl",
+        ("linux", "aarch64") => "klausur-aarch64-unknown-linux-musl",
+        ("macos", "aarch64") => "klausur-aarch64-apple-darwin",
+        ("macos", "x86_64") => "klausur-x86_64-apple-darwin",
+        _ => "klausur-x86_64-pc-windows-msvc.exe",
+    };
+    std::thread::spawn(move || {
+        for req in server.incoming_requests() {
+            let url = req.url().to_string();
+            let response = if url == "/releases/latest" {
+                tiny_http::Response::from_data(Vec::new())
+                    .with_status_code(302)
+                    .with_header(
+                        tiny_http::Header::from_bytes("Location", "/releases/tag/v99.0.0").unwrap(),
+                    )
+            } else if url == format!("/releases/download/v99.0.0/{asset}") {
+                tiny_http::Response::from_data(asset_bytes.to_vec())
+            } else if url == "/releases/download/v99.0.0/SHA256SUMS" {
+                tiny_http::Response::from_data(sums(asset).into_bytes())
+            } else {
+                tiny_http::Response::from_data(Vec::new()).with_status_code(404)
+            };
+            let _ = req.respond(response);
+        }
+    });
+    base
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+#[test]
+fn update_hint_and_update() {
+    const NEW: &[u8] = b"pretend this is klausur 99";
+    let releases = release_server(NEW, |asset| format!("{}  {asset}\n", sha256_hex(NEW)));
+    let p = Project::new("update");
+    p.file("t.test.kl", "test \"t\" { expect true }\n");
+    let cache = p.path("cache");
+    let run = |exe: &Path, args: &[&str]| {
+        std::process::Command::new(exe)
+            .args(args)
+            .current_dir(&p.dir)
+            .env("KLAUSUR_RELEASES_URL", &releases)
+            .env("KLAUSUR_CACHE_DIR", &cache)
+            .env("NO_COLOR", "1")
+            .env_remove("CI")
+            .env_remove("KLAUSUR_NO_UPDATE_CHECK")
+            .output()
+            .unwrap()
+    };
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_klausur"));
+
+    // The hint, then the same from the cache (the check runs at most once a day).
+    for _ in 0..2 {
+        let out = run(&exe, &["test", "t.test.kl"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let hint = format!(
+            "klausur 99.0.0 is out (you have {}): run `klausur update`",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(stderr.contains(&hint), "{stderr}");
+    }
+    assert!(
+        std::fs::read_to_string(cache.join("latest-version"))
+            .unwrap()
+            .ends_with(" 99.0.0\n")
+    );
+
+    // `update` replaces a copy of the binary, never the one the tests run.
+    let copy = p.path(if cfg!(windows) {
+        "bin/klausur.exe"
+    } else {
+        "bin/klausur"
+    });
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    std::fs::copy(&exe, &copy).unwrap();
+    let out = run(&copy, &["update"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("→ 99.0.0"), "{stdout}");
+    assert_eq!(std::fs::read(&copy).unwrap(), NEW);
+}
+
+#[test]
+fn update_refuses_a_bad_checksum() {
+    let releases = release_server(b"tampered", |asset| {
+        format!("{}  {asset}\n", "0".repeat(64))
+    });
+    let p = Project::new("update-bad");
+    let copy = p.path(if cfg!(windows) {
+        "klausur.exe"
+    } else {
+        "klausur"
+    });
+    std::fs::copy(env!("CARGO_BIN_EXE_klausur"), &copy).unwrap();
+    let before = std::fs::read(&copy).unwrap();
+    let out = std::process::Command::new(&copy)
+        .arg("update")
+        .env("KLAUSUR_RELEASES_URL", &releases)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("doesn't match its checksum; nothing was changed"),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::read(&copy).unwrap(), before);
+}
+
+#[test]
+fn parallel_groups() {
+    // Each check gets its own server: `/hold` reports the most requests it ever held at once.
+    for (modifier, max_peak, overlaps) in [
+        (r#"parallel("slow", 1)"#, 1, false),
+        (r#"parallel("slow", 2)"#, 2, true),
+    ] {
+        let server = start();
+        let p = project(
+            "groups",
+            &format!(
+                r#"
+@hold() {{ connection {{ GET {{{{base}}}}/hold?ms=300 }} }}
+test "grouped" (n in [1, 2, 3, 4]) {modifier} {{
+    let r = hold()
+    expect r.body.peak <= {max_peak}
+    if !{overlaps} {{ expect !r.body.overlapped }}
+}}
+"#
+            ),
+        );
+        let out = p.run(&server, &["test", "-j", "4"]);
+        assert_eq!(out.code, 0, "{modifier}\n{}", out.all());
+        assert!(out.stdout.contains("4 passed"), "{}", out.all());
+    }
+}
+
+#[test]
+fn fail_fast_and_junit() {
+    let server = start();
+    let p = project(
+        "junit",
+        r#"
+test "first passes" { expect true }
+test "second fails <&>" { expect 1 + 1 == 3 }
+test "third never runs" { expect true }
+test "skipped one" skip("not today") { expect true }
+"#,
+    );
+    let out = p.run(&server, &["test", "--fail-fast"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    assert!(out.stdout.contains("1 passed, 1 failed"), "{}", out.all());
+    assert!(
+        out.stdout
+            .contains("stopped after the first failure (--fail-fast)"),
+        "{}",
+        out.all()
+    );
+    assert!(!out.stdout.contains("✓ third never runs"), "{}", out.all());
+
+    let out = p.run(&server, &["test", "--junit", "report.xml"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    let xml = std::fs::read_to_string(p.path("report.xml")).unwrap();
+    let doc = roxmltree::Document::parse(&xml).expect("well-formed XML");
+    let root = doc.root_element();
+    assert_eq!(root.tag_name().name(), "testsuites");
+    assert_eq!(root.attribute("tests"), Some("4"));
+    assert_eq!(root.attribute("failures"), Some("1"));
+    assert_eq!(root.attribute("skipped"), Some("1"));
+    let cases: Vec<_> = doc
+        .descendants()
+        .filter(|n| n.has_tag_name("testcase"))
+        .collect();
+    let names: Vec<_> = cases.iter().filter_map(|c| c.attribute("name")).collect();
+    assert_eq!(
+        names,
+        [
+            "first passes",
+            "second fails <&>",
+            "third never runs",
+            "skipped one"
+        ]
+    );
+    let failure = cases[1]
+        .children()
+        .find(|n| n.has_tag_name("failure"))
+        .unwrap();
+    assert_eq!(
+        failure.attribute("message"),
+        Some("expectation failed: 2 == 3")
+    );
+    assert!(
+        failure.text().unwrap_or_default().contains("t.test.kl:4"),
+        "{xml}"
+    );
+    assert!(!xml.contains('\x1b'), "{xml}");
+    let skipped = cases[3]
+        .children()
+        .find(|n| n.has_tag_name("skipped"))
+        .unwrap();
+    assert_eq!(skipped.attribute("message"), Some("not today"));
+}
+
+#[test]
+fn watch_reruns_on_change() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let p = Project::new("watch");
+    p.file("w.test.kl", "test \"one\" { expect true }\n");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_klausur"))
+        .args(["test", "--watch", "."])
+        .current_dir(&p.dir)
+        .env("NO_COLOR", "1")
+        .env("KLAUSUR_NO_UPDATE_CHECK", "1")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stdout = child.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = tx.send(line);
+        }
+    });
+    let mut seen = String::new();
+    let mut wait_for = |text: &str| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !seen.contains(text) {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(line) => {
+                    seen.push_str(&line);
+                    seen.push('\n');
+                }
+                Err(_) => return Err(seen.clone()),
+            }
+        }
+        Ok(())
+    };
+    let result = wait_for("watching for changes").and_then(|()| {
+        // Give the watcher a moment to settle before the change.
+        std::thread::sleep(Duration::from_millis(500));
+        p.file("w.test.kl", "test \"two\" { expect false }\n");
+        wait_for("✗ two")
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    if let Err(seen) = result {
+        panic!("watch output:\n{seen}");
+    }
+}
+
+#[test]
+fn init_scaffolds_a_suite_that_runs() {
+    let server = start();
+    let p = Project::new("init");
+    let klausur = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_klausur"))
+            .args(args)
+            .current_dir(&p.dir)
+            .env("BASE_URL", &server.base)
+            .env("NO_COLOR", "1")
+            .env("KLAUSUR_NO_UPDATE_CHECK", "1")
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+
+    // The default folder; the example test passes against a running service.
+    let (code, out) = klausur(&["init"]);
+    assert_eq!(code, Some(0), "{out}");
+    for file in [
+        "api.kl",
+        "lib.kl",
+        "example.test.kl",
+        "README.md",
+        ".gitignore",
+    ] {
+        assert!(
+            p.path(&format!("src/test/klausur/{file}")).exists(),
+            "{file}\n{out}"
+        );
+    }
+    let (code, out) = klausur(&["test", "src/test/klausur"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("✓ the service answers"), "{out}");
+
+    // Existing files are kept.
+    p.file("src/test/klausur/api.kl", "// mine\n");
+    let (_, out) = klausur(&["init"]);
+    assert!(out.contains("kept"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(p.path("src/test/klausur/api.kl")).unwrap(),
+        "// mine\n"
+    );
+
+    // Basic auth: `logged_in()` sends the credentials with every request of the case.
+    let (code, out) = klausur(&["init", "basic", "--auth", "basic"]);
+    assert_eq!(code, Some(0), "{out}");
+    p.file(
+        "basic/auth.test.kl",
+        r#"
+import "lib.kl"
+@echo() { connection { GET {{base}}/echo } }
+test "credentials are sent" logged_in() {
+    expect echo().body.headers.authorization == `Basic ${base64_encode("user:password")}`
+}
+"#,
+    );
+    let (code, out) = klausur(&["test", "basic"]);
+    assert_eq!(code, Some(0), "{out}");
+
+    // Bearer: the generated login request and modifier load.
+    let (code, out) = klausur(&["init", "bearer", "--auth", "bearer"]);
+    assert_eq!(code, Some(0), "{out}");
+    let (code, out) = klausur(&["list", "bearer"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(
+        out.contains("@login(") && out.contains("fn logged_in()"),
+        "{out}"
+    );
+}
+
+#[test]
+fn unique_is_built_in_and_overridable() {
+    let server = start();
+    let p = project(
+        "unique",
+        r#"
+test "built in" { expect regex_match(unique("alice"), "^alice-[0-9a-f]{8}$") && unique().len() == 8 }
+"#,
+    );
+    p.file(
+        "own.test.kl",
+        "fn unique(p) { `own-${p}` }\ntest \"own\" { expect unique(\"x\") == \"own-x\" }\n",
+    );
+    // One namespace across loaded files: a suite's own `unique` replaces the built-in everywhere,
+    // so the two files run separately.
+    for file in ["t.test.kl", "own.test.kl"] {
+        let out = p.run(&server, &["test", file]);
+        assert_eq!(out.code, 0, "{}", out.all());
+        assert!(out.stdout.contains("1 passed"), "{}", out.all());
     }
 }

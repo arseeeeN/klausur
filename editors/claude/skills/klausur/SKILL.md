@@ -39,17 +39,18 @@ this order:
 `klausur list <suite-dir>` prints every request with its signature, every function and every
 test.
 
-No suite yet? Create `src/test/klausur/` (or the project's test folder) with:
+No suite yet? `klausur init [dir]` (0.4+) creates one in `src/test/klausur` or the folder you
+name, with `--auth basic|bearer` for a working login modifier. Rename its placeholder `BASE_URL`
+after the service when that helps (`ORDERS_URL`). Before 0.4, create the same by hand:
 
 ```
-api.kl            let base = env("<SERVICE>_URL", "http://localhost:<port>"), one request per endpoint
-lib.kl            import "api.kl"; shared helpers (unique(), login modifiers, fixtures)
+api.kl            let base = env("BASE_URL", "http://localhost:8080"), one request per endpoint
+lib.kl            import "api.kl"; shared helpers (login modifiers, fixtures)
 <area>.test.kl    import "lib.kl"; the tests, one file per area of the API
 README.md         how to start the service, the env vars the suite reads, how to run it
 ```
 
-Name the env var after the service (`ORDERS_URL`), default it to the local address, and say in
-the README how to start the service locally. All loaded files share one namespace, which is why
+Say in the README how to start the service locally. All loaded files share one namespace, which is why
 shared helpers live in `lib.kl` only.
 
 **Before running anything, know where the tests point.** Tests create and delete real data.
@@ -86,13 +87,16 @@ The patterns that keep a suite trustworthy, and why:
   error cases use a raw variant without `expect` (`send = payload`) and check `status` in the test.
 - **Every request that creates state has an `undo`**, and every test that creates state uses
   `rollback`. Otherwise one run's leftovers break the next, and nobody knows why.
-- **Unique data per test** (``fn unique(p) { `${p}-${uuid().sub_string(0, 8)}` }``, often
-  already in `lib.kl`): tests then can't see each other's records, even across runs.
+- **Unique data per test** with `unique("alice")` → `alice-3f9c2a1b` (built in from 0.4; before,
+  ``fn unique(p) { `${p}-${uuid().sub_string(0, 8)}` }`` in `lib.kl`): tests then can't see
+  each other's records, even across runs.
 - **Wait with `poll`, never `sleep`**, for anything the service does in the background.
 - **Name tests after the behaviour** ("a deactivated user can't log in"): the name is what the
   report and the user see.
 - **`parallel` only for tests that don't depend on global state** (counts, "the only one"); the
-  rest run alone, and that's the default for a reason.
+  rest run alone, and that's the default for a reason. Tests that share a slow or rate-limited
+  resource (an LLM, an external API) go in a group: `parallel("llm", 1)` (0.4+) keeps them from
+  overlapping while the others still run in parallel.
 - **Don't weaken a test to make it pass.** If the service is wrong, that's the finding: keep the
   test failing, or mark it `skip("BUG-123: what's wrong")` if the user wants a green run, and
   report it.
@@ -108,6 +112,10 @@ klausur test <suite-dir> --fail-fast     # 0.4+: stop at the first failure (long
 # for people writing tests; suggest it to the user instead.
 klausur run <suite-dir>/api.kl#createUser -a name=alice   # one request, body to stdout
 ```
+
+For CI, add `--junit klausur-report.xml` (0.4+): GitLab and Jenkins show the results, failures
+with their source line and values, from that file. The guide's CI section has a GitLab job:
+https://github.com/arseeeeN/klausur/blob/main/docs/guide.md#ci
 
 Start the service the way the suite's README says if it isn't running (check its health URL
 first). A failure report shows the source line, the values of the expression's parts under

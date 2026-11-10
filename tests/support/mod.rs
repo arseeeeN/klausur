@@ -252,6 +252,8 @@ pub fn run_in(dir: &Path, server: &Server, args: &[&str]) -> Output {
         .current_dir(dir)
         .env("BASE", &server.base)
         .env("NO_COLOR", "1")
+        // No release check: no network in tests, and no hint in their output.
+        .env("KLAUSUR_NO_UPDATE_CHECK", "1")
         .output()
         .unwrap();
     Output {

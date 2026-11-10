@@ -43,6 +43,9 @@ pub fn type_name(value: &Dynamic) -> String {
     if value.is_float() {
         return "float".into();
     }
+    if value.is::<RawText>() {
+        return "raw text".into();
+    }
     value
         .type_name()
         .rsplit("::")
@@ -104,6 +107,10 @@ pub fn display(value: &Dynamic) -> String {
             "<function {}>",
             value.clone().cast::<rhai::FnPtr>().fn_name()
         );
+    }
+    // `raw(…)` and `url_path(…)`: show the text they insert.
+    if let Some(raw) = value.read_lock::<RawText>() {
+        return format!("raw({})", serde_json::Value::String(raw.0.clone()));
     }
     value.to_string()
 }

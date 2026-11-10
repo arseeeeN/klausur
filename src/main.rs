@@ -1,4 +1,5 @@
 mod diag;
+mod init;
 mod load;
 mod parallel;
 mod report;
@@ -8,6 +9,7 @@ mod source;
 mod style;
 mod syntax;
 mod testing;
+mod update;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use load::{LoadError, LoadOptions, Program};
@@ -59,42 +61,66 @@ enum Command {
         headed: bool,
     },
     /// Run tests. Arguments that are existing paths select files; others filter test names.
-    Test {
-        #[arg(value_name = "PATH_OR_FILTER")]
-        targets: Vec<String>,
-        /// Seed for generated values; failures print the seed that reproduces them.
-        #[arg(long)]
-        seed: Option<u64>,
-        /// Only run cases whose argument `NAME` displays as `VALUE`, or whose `label(...)` is
-        /// exactly `LABEL`.
-        #[arg(long = "case", value_name = "NAME=VALUE|LABEL")]
-        cases: Vec<String>,
-        /// Only run tests with this tag.
-        #[arg(long = "tag")]
-        tags: Vec<String>,
-        /// What to do after a test leaves the environment dirty.
-        #[arg(long, value_enum, default_value_t = OnDirty::Abort)]
-        on_dirty: OnDirty,
-        #[arg(long, value_name = "NAME")]
-        env: Option<String>,
-        /// Show logs of passing tests and every request.
-        #[arg(short, long)]
-        verbose: bool,
-        /// Per-request timeout in seconds.
-        #[arg(long, value_name = "SECS", default_value_t = 30)]
-        timeout: u64,
-        /// How many tests marked `parallel` run at once. Other tests always run alone.
-        #[arg(short, long, value_name = "N", default_value_t = 4)]
-        jobs: usize,
-        /// Show the browser window for pages the tests open.
-        #[arg(long)]
-        headed: bool,
-    },
+    Test(TestArgs),
     /// List requests, functions and tests.
     List {
         #[arg(default_value = ".")]
         paths: Vec<PathBuf>,
     },
+    /// Replace this binary with the latest release, checked against its SHA256SUMS.
+    Update,
+    /// Create a test suite to start from: requests, helpers, an example test and a README.
+    /// Files that already exist are kept.
+    Init {
+        /// Where to put it.
+        #[arg(default_value = "src/test/klausur")]
+        dir: PathBuf,
+        /// Generate a working login modifier for basic auth or a bearer token.
+        #[arg(long, value_enum)]
+        auth: Option<init::Auth>,
+    },
+}
+
+#[derive(clap::Args, Clone)]
+struct TestArgs {
+    #[arg(value_name = "PATH_OR_FILTER")]
+    targets: Vec<String>,
+    /// Seed for generated values; failures print the seed that reproduces them.
+    #[arg(long)]
+    seed: Option<u64>,
+    /// Only run cases whose argument `NAME` displays as `VALUE`, or whose `label(...)` is
+    /// exactly `LABEL`.
+    #[arg(long = "case", value_name = "NAME=VALUE|LABEL")]
+    cases: Vec<String>,
+    /// Only run tests with this tag.
+    #[arg(long = "tag")]
+    tags: Vec<String>,
+    /// What to do after a test leaves the environment dirty.
+    #[arg(long, value_enum, default_value_t = OnDirty::Abort)]
+    on_dirty: OnDirty,
+    #[arg(long, value_name = "NAME")]
+    env: Option<String>,
+    /// Show logs of passing tests and every request.
+    #[arg(short, long)]
+    verbose: bool,
+    /// Per-request timeout in seconds.
+    #[arg(long, value_name = "SECS", default_value_t = 30)]
+    timeout: u64,
+    /// How many tests marked `parallel` run at once. Other tests always run alone.
+    #[arg(short, long, value_name = "N", default_value_t = 4)]
+    jobs: usize,
+    /// Show the browser window for pages the tests open.
+    #[arg(long)]
+    headed: bool,
+    /// Stop scheduling tests after the first failure.
+    #[arg(long)]
+    fail_fast: bool,
+    /// Also write the results as a JUnit XML report (for GitLab, Jenkins, …).
+    #[arg(long, value_name = "FILE")]
+    junit: Option<PathBuf>,
+    /// Run again whenever a `.kl` file (or anything else in the test folders) changes.
+    #[arg(short, long)]
+    watch: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -128,6 +154,11 @@ fn main() -> ExitCode {
         );
     });
     let cli = Cli::parse();
+    // `test` and `run` mention a newer release at the end; the check never delays them.
+    let check = match cli.command {
+        Command::Run { .. } | Command::Test(_) => update::start_check(),
+        _ => update::Check::Off,
+    };
     let code = match cli.command {
         Command::Run {
             target,
@@ -137,33 +168,14 @@ fn main() -> ExitCode {
             timeout,
             headed,
         } => run(&target, &args, env, quiet, timeout, headed, interrupted),
-        Command::Test {
-            targets,
-            seed,
-            cases,
-            tags,
-            on_dirty,
-            env,
-            verbose,
-            timeout,
-            jobs,
-            headed,
-        } => test(
-            targets,
-            seed,
-            cases,
-            tags,
-            on_dirty,
-            env,
-            verbose,
-            timeout,
-            jobs.max(1),
-            headed,
-            interrupted,
-        ),
+        Command::Test(args) if args.watch => watch(&args, interrupted),
+        Command::Test(args) => test(&args, interrupted),
         Command::List { paths } => list(&paths),
+        Command::Update => update::update(),
+        Command::Init { dir, auth } => init::init(&dir, auth),
     };
     runtime::browser::shutdown();
+    update::finish_check(check);
     ExitCode::from(code as u8)
 }
 
@@ -424,27 +436,20 @@ fn pretty_value(v: &Dynamic) -> String {
         .unwrap_or_else(|| display(v))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn test(
-    targets: Vec<String>,
-    seed: Option<u64>,
-    raw_cases: Vec<String>,
-    tags: Vec<String>,
-    on_dirty: OnDirty,
-    env: Option<String>,
-    verbose: bool,
-    timeout: u64,
-    jobs: usize,
-    headed: bool,
-    interrupted: Arc<AtomicBool>,
-) -> i32 {
-    let (paths, filters): (Vec<String>, Vec<String>) =
-        targets.into_iter().partition(|t| PathBuf::from(t).exists());
-    let paths: Vec<PathBuf> = if paths.is_empty() {
-        vec![PathBuf::from(".")]
-    } else {
-        paths.into_iter().map(PathBuf::from).collect()
-    };
+fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
+    let TestArgs {
+        seed,
+        cases: raw_cases,
+        tags,
+        on_dirty,
+        env,
+        verbose,
+        timeout,
+        headed,
+        ..
+    } = args.clone();
+    let jobs = args.jobs.max(1);
+    let (paths, filters) = targets(args);
     // `--case NAME=VALUE` matches an argument; any `--case` also matches a `label(...)` exactly.
     let case_filters: Vec<(String, Option<(String, String)>)> = raw_cases
         .iter()
@@ -560,6 +565,7 @@ fn test(
                 test_idx,
                 case_idx,
                 parallel: def.parallel && jobs > 1,
+                group: def.group.clone(),
                 def: test_def.clone(),
                 spec: Some(case),
             });
@@ -581,11 +587,15 @@ fn test(
         pool,
         reporter: &mut reporter,
         stop_on_dirty: on_dirty == OnDirty::Abort,
+        fail_fast: args.fail_fast,
         done: BTreeMap::new(),
         files: HashMap::new(),
+        groups: HashMap::new(),
+        running: HashMap::new(),
         next: 0,
         in_flight: 0,
         stopped: false,
+        failed: false,
     };
     for (seq, step) in steps.into_iter().enumerate() {
         if run.stopped || interrupted.load(Ordering::SeqCst) {
@@ -599,12 +609,16 @@ fn test(
                 test_idx,
                 case_idx,
                 parallel: true,
+                group,
                 ..
             } => {
-                while run.in_flight >= jobs {
+                while run.in_flight >= jobs || run.group_full(&group) {
                     run.receive();
                 }
-                run.send(seq, file, test_idx, case_idx);
+                if run.stopped || interrupted.load(Ordering::SeqCst) {
+                    break;
+                }
+                run.send(seq, file, test_idx, case_idx, group);
             }
             Step::Case {
                 file,
@@ -633,7 +647,28 @@ fn test(
         reporter.summary.interrupted = true;
     }
     reporter.finish(started.elapsed());
+    if let Some(path) = &args.junit
+        && let Err(e) = std::fs::write(path, reporter.junit())
+    {
+        eprintln!("{}", red(format!("couldn't write {}: {e}", path.display())));
+    }
     reporter.summary.exit_code()
+}
+
+/// The paths (existing files and directories; the current directory if none) and the
+/// name filters among `klausur test`'s arguments.
+fn targets(args: &TestArgs) -> (Vec<PathBuf>, Vec<String>) {
+    let (paths, filters): (Vec<String>, Vec<String>) = args
+        .targets
+        .iter()
+        .cloned()
+        .partition(|t| PathBuf::from(t).exists());
+    let paths = if paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        paths.into_iter().map(PathBuf::from).collect()
+    };
+    (paths, filters)
 }
 
 /// One planned entry of a test run.
@@ -646,6 +681,8 @@ enum Step {
         test_idx: usize,
         case_idx: usize,
         parallel: bool,
+        /// `parallel("llm", 1)`: the group and how many of its cases may run at once.
+        group: Option<(String, usize)>,
         def: testing::TestDef,
         /// The case itself, for running it on this thread.
         spec: Option<testing::CaseSpec>,
@@ -673,22 +710,47 @@ struct Schedule<'r, 'a> {
     pool: Option<parallel::Pool>,
     reporter: &'r mut Reporter<'a>,
     stop_on_dirty: bool,
+    /// `--fail-fast`: stop scheduling after the first failure.
+    fail_fast: bool,
     /// Finished steps that wait for earlier ones before they're printed.
     done: BTreeMap<usize, Done>,
     /// The file of each case on the pool.
     files: HashMap<usize, String>,
+    /// The group of each case on the pool, and how many of each group are running.
+    groups: HashMap<usize, String>,
+    running: HashMap<String, usize>,
     next: usize,
     in_flight: usize,
     stopped: bool,
+    /// Stopped by `--fail-fast` (rather than by a dirty case).
+    failed: bool,
 }
 
 impl Schedule<'_, '_> {
-    fn send(&mut self, seq: usize, file: String, test: usize, case: usize) {
+    fn send(
+        &mut self,
+        seq: usize,
+        file: String,
+        test: usize,
+        case: usize,
+        group: Option<(String, usize)>,
+    ) {
         if let Some(pool) = &self.pool {
             self.files.insert(seq, file);
+            if let Some((name, _)) = group {
+                *self.running.entry(name.clone()).or_default() += 1;
+                self.groups.insert(seq, name);
+            }
             pool.send(parallel::Job { seq, test, case });
             self.in_flight += 1;
         }
+    }
+
+    /// Whether the group already runs as many cases as it may.
+    fn group_full(&self, group: &Option<(String, usize)>) -> bool {
+        group
+            .as_ref()
+            .is_some_and(|(name, limit)| self.running.get(name).copied().unwrap_or(0) >= *limit)
     }
 
     /// Wait for one case on the pool to finish.
@@ -698,6 +760,11 @@ impl Schedule<'_, '_> {
             return;
         };
         self.in_flight -= 1;
+        if let Some(name) = self.groups.remove(&seq)
+            && let Some(n) = self.running.get_mut(&name)
+        {
+            *n = n.saturating_sub(1);
+        }
         let file = self.files.remove(&seq).unwrap_or_default();
         self.finish(seq, Done::Case(file, result));
     }
@@ -710,6 +777,15 @@ impl Schedule<'_, '_> {
             && self.stop_on_dirty
         {
             self.stopped = true;
+        }
+        let failed = match &d {
+            Done::Case(_, r) => r.outcome.is_err(),
+            Done::Error(..) => true,
+            Done::Skipped(..) => false,
+        };
+        if failed && self.fail_fast && !self.stopped {
+            self.stopped = true;
+            self.failed = true;
         }
         self.done.insert(seq, d);
         while let Some(d) = self.done.remove(&self.next) {
@@ -724,7 +800,9 @@ impl Schedule<'_, '_> {
         for (_, d) in std::mem::take(&mut self.done) {
             report_done(self.reporter, d);
         }
-        if self.stopped {
+        if self.stopped && self.failed {
+            self.reporter.summary.stopped_failed = true;
+        } else if self.stopped {
             self.reporter.summary.stopped_dirty = true;
         }
     }
@@ -804,4 +882,90 @@ fn list(paths: &[PathBuf]) -> i32 {
         }
         Err(code) => code,
     }
+}
+
+/// `klausur test --watch`: run, then run again whenever something in the test folders changes,
+/// until Ctrl-C.
+fn watch(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
+    use notify::{RecursiveMode, Watcher};
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = match notify::recommended_watcher(move |e: notify::Result<notify::Event>| {
+        if let Ok(e) = e
+            && !matches!(e.kind, notify::EventKind::Access(_))
+            && e.paths.iter().any(|p| relevant_change(p))
+        {
+            let _ = tx.send(());
+        }
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("{}", red(format!("can't watch for changes: {e}")));
+            return 2;
+        }
+    };
+    // A file argument is watched through its folder: editors often save by replacing the file.
+    let (paths, _) = targets(args);
+    for path in &paths {
+        let dir = if path.is_file() {
+            path.parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+        } else {
+            path.clone()
+        };
+        let dir = if dir.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            dir
+        };
+        if let Err(e) = watcher.watch(&dir, RecursiveMode::Recursive) {
+            eprintln!("{}", red(format!("can't watch {}: {e}", dir.display())));
+            return 2;
+        }
+    }
+    loop {
+        let code = test(args, interrupted.clone());
+        if interrupted.load(Ordering::SeqCst) {
+            return code;
+        }
+        // Files the run wrote itself (fixtures, screenshots, undo) don't count as changes.
+        while rx.try_recv().is_ok() {}
+        println!("{}", dim("watching for changes (Ctrl-C to stop) …"));
+        loop {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(()) => break,
+                Err(RecvTimeoutError::Timeout) if interrupted.load(Ordering::SeqCst) => {
+                    return code;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return code,
+            }
+        }
+        // One save often touches several files; wait for the burst to end.
+        std::thread::sleep(Duration::from_millis(150));
+        while rx.try_recv().is_ok() {}
+        println!("\n{}\n", dim("── change detected, running again ──"));
+    }
+}
+
+/// Changes worth a rerun: not klausur's own results, hidden files, or editor swap files.
+fn relevant_change(path: &std::path::Path) -> bool {
+    if path
+        .components()
+        .any(|c| c.as_os_str() == runtime::browser::RESULTS_DIR)
+    {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    !(name.starts_with('.')
+        || name.ends_with('~')
+        || name.ends_with(".swp")
+        || name.ends_with(".swx")
+        || name == "4913")
 }

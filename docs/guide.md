@@ -30,7 +30,10 @@ src/test/klausur/
 
 Only `*.test.kl` files hold tests by convention; `klausur test <dir>` runs the tests of every
 `.kl` file under it, and imported files are loaded once. All files share **one namespace**: two
-files can't both define `fn unique()`, so shared helpers belong in `lib.kl`.
+files can't both define `fn logged_in()`, so shared helpers belong in `lib.kl`.
+
+`klausur init` (0.4+) creates this layout with an example request and test, in
+`src/test/klausur` or the folder you name; `--auth basic|bearer` adds a working login modifier.
 
 ## Requests: `api.kl`
 
@@ -93,8 +96,9 @@ check a block while writing it.
 ```
 import "api.kl"
 
-// A value no other test or earlier run uses, so tests can't see each other's data.
-fn unique(prefix) { `${prefix}-${uuid().sub_string(0, 8)}` }
+// `unique("alice")` is built in (0.4+): "alice-3f9c2a1b", a value no other test or earlier run
+// uses, so tests can't see each other's data. Before 0.4, define it here:
+// fn unique(prefix) { `${prefix}-${uuid().sub_string(0, 8)}` }
 
 // Log in before each case; the token is `ctx.jwt` in the test body.
 fn logged_in(user = "admin") {
@@ -145,6 +149,9 @@ test "roles" (role, can_delete) cases [
   combination, `cases [ #{…} ]` runs rows, and `label(expr)` names each case in the report.
   Generators (`gen::string(1..64)`, `gen::email()`, …) sample values, 25 per combination unless
   `runs(n)`; a failure prints the seed that reproduces it.
+- **Group what mustn't overlap.** `parallel("llm", 1)` keeps tests that share a slow or
+  rate-limited resource from running at the same time, while the others still overlap.
+- **`--watch` while writing tests** reruns the selected tests on every save.
 - **`parallel` only for tests that don't care what else runs.** A test that checks a global
   count ("exactly one document exists") must stay serial. Unmarked tests run alone.
 - **Fixture files restore themselves**: `write_file(path, content, undo: true)` puts back what was
@@ -219,6 +226,7 @@ klausur test src/test/klausur --seed 1234         # replay generated values
 klausur test src/test/klausur -v                  # logs and the request trace of every test
 klausur test src/test/klausur --tag ui --headed   # tagged tests, with a visible browser
 klausur list src/test/klausur                     # requests, functions and tests
+klausur init                                      # a suite to start from, in src/test/klausur
 ```
 
 A failure shows the source line, the values of the expression's parts (`where:`), the call
@@ -236,10 +244,29 @@ Run the service (or point `API_URL` at a test environment), install klausur, and
 
 ```
 curl -fsSL https://github.com/arseeeeN/klausur/releases/latest/download/install.sh | sh
-klausur test src/test/klausur
+klausur test src/test/klausur --junit klausur-report.xml
 ```
 
+With `--junit`, GitLab shows the results in the merge request and the pipeline's Tests tab,
+failures with their source line and values:
+
+```yaml
+api-tests:
+  script:
+    - curl -fsSL https://github.com/arseeeeN/klausur/releases/latest/download/install.sh | sh
+    - ~/.local/bin/klausur test src/test/klausur --junit klausur-report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: klausur-report.xml
+    paths:
+      - klausur-results/
+```
+
+`klausur-results/` keeps the screenshots of failed browser tests.
+
 Treat exit code 3 as more serious than 1: the environment is polluted for the next run.
+CI installs the latest release each time, so the update hint is off there (`CI` is set).
 `--on-dirty=continue` keeps going after a dirty case instead of stopping. Keep secrets in the
 environment (`env("API_TOKEN")`); `.env` and `.env.<name>` (with `--env <name>`) are read too.
 

@@ -273,6 +273,7 @@ pub struct Summary {
     pub dirty: usize,
     pub interrupted: bool,
     pub stopped_dirty: bool,
+    pub stopped_failed: bool,
 }
 
 impl Summary {
@@ -295,7 +296,23 @@ pub struct Reporter<'a> {
     current_file: Option<String>,
     failures: Vec<CaseResult>,
     dirty: Vec<(String, u64, DirtyReport)>,
+    /// Every case, for `--junit`.
+    junit: Vec<JunitCase>,
     pub summary: Summary,
+}
+
+struct JunitCase {
+    file: String,
+    name: String,
+    seconds: f64,
+    outcome: JunitOutcome,
+    logs: Vec<String>,
+}
+
+enum JunitOutcome {
+    Passed,
+    Failed { message: String, text: String },
+    Skipped(String),
 }
 
 impl<'a> Reporter<'a> {
@@ -308,6 +325,7 @@ impl<'a> Reporter<'a> {
             current_file: None,
             failures: Vec::new(),
             dirty: Vec::new(),
+            junit: Vec::new(),
             summary: Summary::default(),
         }
     }
@@ -349,20 +367,122 @@ impl<'a> Reporter<'a> {
                 self.dirty.push((result.label(), self.seed, d.clone()));
             }
         }
+        self.junit.push(JunitCase {
+            file: file.to_string(),
+            name: result.label(),
+            seconds: result.duration.as_secs_f64(),
+            outcome: match &result.outcome {
+                Ok(()) => JunitOutcome::Passed,
+                Err(f) => JunitOutcome::Failed {
+                    message: f.message.clone(),
+                    text: plain(&render_failure(f, self.sources)),
+                },
+            },
+            logs: result.logs.clone(),
+        });
+        if !result.dirty.is_empty() {
+            let entries: Vec<(String, u64, &DirtyReport)> = result
+                .dirty
+                .iter()
+                .map(|d| (result.label(), self.seed, d))
+                .collect();
+            let text = plain(&render_dirty(&entries, self.sources));
+            if let Some(case) = self.junit.last_mut() {
+                case.outcome = JunitOutcome::Failed {
+                    message: "dirty: a cleanup failed and left state behind".into(),
+                    text: match &case.outcome {
+                        JunitOutcome::Failed { text: t, .. } => format!("{t}\n{text}"),
+                        _ => text,
+                    },
+                };
+            }
+        }
         if result.outcome.is_err() {
             self.failures.push(result);
         }
     }
 
+    /// The run as a JUnit XML report: one `<testsuite>` per file, in run order.
+    pub fn junit(&self) -> String {
+        let mut files: Vec<&str> = Vec::new();
+        for c in &self.junit {
+            if !files.contains(&c.file.as_str()) {
+                files.push(&c.file);
+            }
+        }
+        let count = |cases: &[&JunitCase], f: fn(&JunitOutcome) -> bool| {
+            cases.iter().filter(|c| f(&c.outcome)).count()
+        };
+        let failed = |o: &JunitOutcome| matches!(o, JunitOutcome::Failed { .. });
+        let skipped = |o: &JunitOutcome| matches!(o, JunitOutcome::Skipped(_));
+        let all: Vec<&JunitCase> = self.junit.iter().collect();
+        let total: f64 = all.iter().map(|c| c.seconds).sum();
+        let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        out.push_str(&format!(
+            "<testsuites name=\"klausur\" tests=\"{}\" failures=\"{}\" skipped=\"{}\" time=\"{total:.3}\">\n",
+            all.len(),
+            count(&all, failed),
+            count(&all, skipped)
+        ));
+        for file in files {
+            let cases: Vec<&JunitCase> = all.iter().copied().filter(|c| c.file == file).collect();
+            let time: f64 = cases.iter().map(|c| c.seconds).sum();
+            out.push_str(&format!(
+                "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{}\" skipped=\"{}\" time=\"{time:.3}\">\n",
+                xml(file),
+                cases.len(),
+                count(&cases, failed),
+                count(&cases, skipped)
+            ));
+            for c in cases {
+                out.push_str(&format!(
+                    "    <testcase classname=\"{}\" name=\"{}\" file=\"{}\" time=\"{:.3}\">\n",
+                    xml(file),
+                    xml(&c.name),
+                    xml(file),
+                    c.seconds
+                ));
+                match &c.outcome {
+                    JunitOutcome::Passed => {}
+                    JunitOutcome::Failed { message, text } => out.push_str(&format!(
+                        "      <failure message=\"{}\">{}</failure>\n",
+                        xml(message.lines().next().unwrap_or_default()),
+                        xml(text)
+                    )),
+                    JunitOutcome::Skipped(reason) => {
+                        out.push_str(&format!("      <skipped message=\"{}\"/>\n", xml(reason)))
+                    }
+                }
+                if !c.logs.is_empty() {
+                    out.push_str(&format!(
+                        "      <system-out>{}</system-out>\n",
+                        xml(&c.logs.join("\n"))
+                    ));
+                }
+                out.push_str("    </testcase>\n");
+            }
+            out.push_str("  </testsuite>\n");
+        }
+        out.push_str("</testsuites>\n");
+        out
+    }
+
     pub fn skipped(&mut self, file: &str, name: &str, reason: &str) {
         self.file(file);
         self.summary.skipped += 1;
-        let reason = if reason.is_empty() {
+        let shown = if reason.is_empty() {
             String::new()
         } else {
             format!(" {}", dim(format!("— {reason}")))
         };
-        println!("  {} {name}{reason}", yellow("○"));
+        println!("  {} {name}{shown}", yellow("○"));
+        self.junit.push(JunitCase {
+            file: file.to_string(),
+            name: name.to_string(),
+            seconds: 0.0,
+            outcome: JunitOutcome::Skipped(reason_text(reason)),
+            logs: Vec::new(),
+        });
     }
 
     /// A test that couldn't even produce cases (modifier or parameter errors).
@@ -434,5 +554,56 @@ impl<'a> Reporter<'a> {
                 yellow("stopped after a dirty test (use --on-dirty=continue to keep going)")
             );
         }
+        if s.stopped_failed {
+            println!(
+                "{}",
+                yellow("stopped after the first failure (--fail-fast)")
+            );
+        }
     }
+}
+
+fn reason_text(reason: &str) -> String {
+    if reason.is_empty() {
+        "skipped".into()
+    } else {
+        reason.to_string()
+    }
+}
+
+/// Terminal output without colour codes, for files.
+fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Text for an XML attribute or element: escaped, without the control characters XML 1.0
+/// doesn't allow.
+fn xml(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            '\n' | '\t' | '\r' => out.push(c),
+            c if (c as u32) < 0x20 => {}
+            c => out.push(c),
+        }
+    }
+    out
 }

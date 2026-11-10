@@ -480,6 +480,17 @@ fn register_functions(engine: &mut Engine, shared: &Rc<Shared>) {
     });
     let s = shared.clone();
     engine.register_fn("uuid", move || generators::uuid(&s.rng()));
+    // `unique("alice")` → "alice-3f9c2a1b": a value no other test or earlier run uses, so tests
+    // only see their own data. Drawn from the case's generator, so `--seed` reproduces it. A
+    // suite's own `fn unique` takes precedence.
+    let s = shared.clone();
+    engine.register_fn("unique", move || {
+        generators::uuid(&s.rng())[..8].to_string()
+    });
+    let s = shared.clone();
+    engine.register_fn("unique", move |prefix: &str| {
+        format!("{prefix}-{}", &generators::uuid(&s.rng())[..8])
+    });
     let s = shared.clone();
     engine.register_fn("sleep", move |ms: i64| -> R<()> {
         super::request::wait(&s, std::time::Duration::from_millis(ms.max(0) as u64))

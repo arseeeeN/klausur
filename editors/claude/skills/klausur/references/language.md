@@ -234,6 +234,7 @@ Hooks: `this.before(|ctx| …)`, `this.after(|ctx, result| …)` (`result.passed
 | `env(name)`, `env(name, default)` | Process env, then `.env.<name>` (`--env name`), then `.env` |
 | `log(x)`, `print(x)` | Into the case log (shown on failure, or always with `-v`) |
 | `fail(msg)` | Fail now |
+| `unique("alice")`, `unique()` (0.4+) | `alice-3f9c2a1b` / `3f9c2a1b`: data no other test uses. A suite's own `fn unique` replaces it |
 | `uuid()`, `sleep(ms)` | `sleep` is for pacing only; wait for conditions with `poll` |
 | `json(path)`, `csv(path)`, `read_file(path)`, `read_blob(path)` | Relative to the current file |
 | `file(path)`, `file_from(name, content[, type])`, `multipart(#{…})` | Upload bodies |
@@ -261,6 +262,7 @@ klausur test [paths…] ["name filter"…] [--tag T] [--case k=v|label] [--seed 
 klausur run file.kl[#name] [-a k=v …] [-q] [--env NAME] [--headed]
 klausur list [paths…]
 klausur update                           # 0.4+: replace klausur with the latest release
+klausur init [dir] [--auth basic|bearer] # 0.4+: a suite to start from (src/test/klausur)
 ```
 
 Arguments that are existing paths select files or directories (searched for `*.kl`); others

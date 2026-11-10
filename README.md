@@ -99,9 +99,13 @@ irm https://github.com/arseeeeN/klausur/releases/latest/download/install.ps1 | i
 ```
 
 The scripts install the latest release to `~/.local/bin` or `%LOCALAPPDATA%\Programs\klausur`,
-after checking it against the release checksums. Run them again to upgrade. You can also
-download `klausur-<target>` for your platform from the
-[releases page](https://github.com/arseeeeN/klausur/releases).
+after checking it against the release checksums. You can also download `klausur-<target>` for
+your platform from the [releases page](https://github.com/arseeeeN/klausur/releases).
+
+**Updating:** `klausur update` replaces klausur with the latest release, checked the same way.
+After a `test` or `run`, klausur mentions when a newer release is out; it asks GitHub at most
+once a day, in the background. `KLAUSUR_NO_UPDATE_CHECK=1` turns that off, and it's off in CI
+(when `CI` is set).
 
 **From source:** install [Rust](https://rustup.rs), then run
 `cargo install --git https://github.com/arseeeeN/klausur`.
@@ -114,7 +118,11 @@ klausur test                                  # every *.kl file under the curren
 klausur test tests/users.test.kl "fetched"    # files and test-name filters
 klausur test --seed 503069000                 # replay the generated cases of an earlier run
 klausur test -j 8 -v                          # 8 parallel cases at a time, with request traces
+klausur test --watch "fetched"                # run again on every change while writing tests
+klausur test --junit report.xml               # also a JUnit report, e.g. for GitLab's MR widget
+klausur test --fail-fast                      # stop at the first failure
 klausur list                                  # requests, functions and tests
+klausur init                                  # a suite to start from, in src/test/klausur
 klausur test --headed                         # show the browser window of browser tests
 ```
 
