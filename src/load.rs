@@ -1083,6 +1083,7 @@ fn parse_diag(e: &rhai::ParseError, span: Option<Span>) -> Diag {
             "case" => "`entry` or `row`",
             "default" => "`fallback`",
             "new" => "`created` or `fresh`",
+            "with" => "a name for what it is, e.g. `with_field` or `extra`",
             _ => "a more specific name",
         };
         d = d.help(format!(

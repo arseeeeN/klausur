@@ -2085,3 +2085,23 @@ test "the files are gone" { expect !file_exists("out/hook.txt") && !file_exists(
     assert_eq!(out.code, 0, "{}", out.all());
     assert!(out.stdout.contains("3 passed"), "{}", out.all());
 }
+
+#[test]
+fn reserved_words_as_keys() {
+    let server = start();
+    let p = project(
+        "reserved-keys",
+        r#"
+@echoJson(payload) {
+    connection { POST {{base}}/echo }
+    send = payload
+}
+test "reserved words as keys" {
+    let sent = parse_json(echoJson(#{ default: 1, new: #{ case: 2 }, call: 3 }).body.body)
+    expect sent.default == 1 && sent.new.case == 2 && sent.call == 3
+}
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+}

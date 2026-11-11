@@ -35,7 +35,10 @@ expressions and the bodies of `fn`s and tests.
   line or after whitespace, so `https://…` is safe. `send` bodies are never
   scanned for comments; their content is literal. In code bodies, Rhai handles comments natively.
 - `{{ expr }}` interpolates an expression into request text (see §4.3).
-- Identifiers follow Rhai rules.
+- Identifiers follow Rhai rules. Rhai reserves some words (`default`, `new`, `case`, `call`,
+  `with`, …) that JSON uses as keys; as a property or a map key they're written as strings
+  for you: `body.default` is `body["default"]`, `#{ call: 1 }` is `#{ "call": 1 }`. They still
+  can't name a variable or a parameter.
 - **Semicolons are optional.** In code bodies, a newline ends a statement unless the line
   obviously continues: it ends with an operator or `,`, or the next line starts with `.`,
   `&&`, `||`, `else`, `catch`, or a closing bracket. klausur inserts the `;` that Rhai needs.

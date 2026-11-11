@@ -24,6 +24,77 @@ enum Kind {
     Switch,
 }
 
+/// Words Rhai reserves or uses as keywords, which can't name a property or a map key as they
+/// are (`body.default`), but often do in JSON.
+///
+/// COPIED FROM RHAI 1.26.1, `src/tokenizer.rs`: every word of `RESERVED_LIST` and of
+/// `KEYWORDS_LIST` (symbols left out). Rhai doesn't export the check itself
+/// (`is_reserved_keyword_or_symbol` is private), hence the copy. When updating Rhai, compare
+/// both tables in the new version's `src/tokenizer.rs` with this list and add or remove words.
+/// `rhai_still_rejects_every_reserved_word` (below) fails for a word Rhai no longer reserves; a
+/// newly reserved word isn't caught by any test.
+const RESERVED: &[&str] = &[
+    "as",
+    "async",
+    "await",
+    "break",
+    "call",
+    "case",
+    "catch",
+    "const",
+    "continue",
+    "curry",
+    "debug",
+    "default",
+    "do",
+    "else",
+    "eval",
+    "export",
+    "false",
+    "fn",
+    "Fn",
+    "for",
+    "go",
+    "goto",
+    "if",
+    "import",
+    "in",
+    "is",
+    "is_def_var",
+    "let",
+    "loop",
+    "match",
+    "module",
+    "new",
+    "nil",
+    "null",
+    "package",
+    "print",
+    "private",
+    "protected",
+    "public",
+    "return",
+    "shared",
+    "spawn",
+    "static",
+    "super",
+    "switch",
+    "sync",
+    "this",
+    "thread",
+    "throw",
+    "true",
+    "try",
+    "type_of",
+    "until",
+    "use",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+];
+
 pub struct Rewriter<'a> {
     pub src: &'a str,
     pub file: FileId,
@@ -117,6 +188,34 @@ impl Rewriter<'_> {
                     let (path_end, segments) = self.path(pos);
                     last = Some(b'a');
                     last_end = path_end;
+                    // `body.default` and `#{ default: 1 }`: JSON keys Rhai reserves become strings,
+                    // `body["default"]` and `#{ "default": 1 }`.
+                    if segments.len() == 1 && RESERVED.contains(&&self.src[pos..path_end]) {
+                        let word = &self.src[pos..path_end];
+                        let next = skip_trivia(self.src, path_end).unwrap_or(path_end);
+                        let after_dot =
+                            bytes[..pos].ends_with(b".") && !bytes[..pos].ends_with(b"..");
+                        if after_dot && bytes.get(next) != Some(&b'(') {
+                            out.push_orig(self.file, copied, &self.src[copied..pos - 1]);
+                            out.push_gen(&format!("[\"{word}\"]"));
+                            copied = path_end;
+                            pos = path_end;
+                            last = Some(b']');
+                            continue;
+                        }
+                        let before = self.src[..pos].trim_end().as_bytes().last().copied();
+                        let is_key = stack.last() == Some(&Kind::Map)
+                            && matches!(before, Some(b'{' | b','))
+                            && bytes.get(next) == Some(&b':')
+                            && bytes.get(next + 1) != Some(&b':');
+                        if is_key {
+                            out.push_orig(self.file, copied, &self.src[copied..pos]);
+                            out.push_gen(&format!("\"{word}\""));
+                            copied = path_end;
+                            pos = path_end;
+                            continue;
+                        }
+                    }
                     if &self.src[pos..path_end] == "switch" {
                         pending_switch = true;
                     }
@@ -284,6 +383,32 @@ mod tests {
             r#"page.wait__kw(#{"_0": ".x", state: "hidden"})"#
         );
         assert_eq!(rewrite("x.method(a)"), "x.method(a)");
+    }
+
+    /// Guards the copy of Rhai's tables in `RESERVED`: each word must still be rejected by
+    /// plain Rhai as a property name, or the rewrite would be pointless (see `RESERVED`).
+    #[test]
+    fn rhai_still_rejects_every_reserved_word() {
+        let engine = rhai::Engine::new_raw();
+        for word in RESERVED {
+            assert!(
+                engine.compile_expression(format!("x.{word}")).is_err(),
+                "Rhai accepts `x.{word}` now; remove `{word}` from RESERVED"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_words_as_keys_become_strings() {
+        assert_eq!(rewrite("body.default"), r#"body["default"]"#);
+        assert_eq!(rewrite("body?.new.id"), r#"body?["new"].id"#);
+        assert_eq!(rewrite("f.call(1)"), "f.call(1)");
+        assert_eq!(
+            rewrite("#{ call: 1, with: [2], name: 3 }"),
+            r#"#{ "call": 1, "with": [2], name: 3 }"#
+        );
+        assert_eq!(rewrite("0..default"), "0..default");
+        assert_eq!(rewrite("#{ a: is_ok }"), "#{ a: is_ok }");
         assert_eq!(rewrite(r#""f(a: 1)""#), r#""f(a: 1)""#);
     }
 

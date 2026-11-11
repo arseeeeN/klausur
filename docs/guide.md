@@ -273,8 +273,9 @@ environment (`env("API_TOKEN")`); `.env` and `.env.<name>` (with `--env <name>`)
 ## Pitfalls
 
 - **Reserved words.** Rhai reserves `call`, `eval`, `goto`, `match`, `case`, `default`, `new`,
-  `async`, `await`, `spawn`, `this`, `var`, `static` and `shared`; they can't be variable or
-  parameter names.
+  `with`, `async`, `await`, `spawn`, `this`, `var`, `static`, `shared` and a few more; they
+  can't be variable or parameter names. As keys they're fine (0.5+): `body.default` and
+  `#{ call: 1 }` work, because klausur writes them as `body["default"]` and `#{ "call": 1 }`.
 - **In-place methods return `()`.** `s.trim()`, `a.sort()` and `a.reverse()` change their value
   and return nothing, so `let t = s.trim()` is `()`. Use `trimmed()`, `sorted()`, `reversed()`.
 - **Strings.** `"…"` is plain; interpolation needs backticks: `` `id-${x}` ``. In request

@@ -1,5 +1,7 @@
 // Vendored from https://github.com/elkowar/tree-sitter-rhai (4ac7384), MIT license, by ElKowar.
-// klausur's grammar extends it; see ../grammar.js.
+// klausur's grammar extends it; see ../grammar.js. Unchanged except for this header.
+// To update: copy grammar.js from a newer commit over this file (keeping this header, with the
+// new commit), then `make generate` and `make test` in the parent folder.
 /// <reference types="tree-sitter-cli/dsl" />
 // @ts-check
 

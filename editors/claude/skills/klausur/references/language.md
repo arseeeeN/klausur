@@ -274,9 +274,11 @@ as JSON when they can be. Exit codes: 0 ok, 1 failed, 2 load error, 3 dirty.
 
 ## Pitfalls
 
-- **Reserved words** can't be names: `call`, `eval`, `goto`, `match`, `case`, `default`, `new`,
-  `async`, `await`, `spawn`, `this`, `var`, `static`, `shared`. Pick `kind` for `match`,
-  `entry` for `case`, `fallback` for `default`.
+- **Reserved words** can't be variable or parameter names: `call`, `eval`, `goto`, `match`,
+  `case`, `default`, `new`, `with`, `async`, `await`, `spawn`, `this`, `var`, `static`,
+  `shared`. Pick `kind` for `match`, `entry` for `case`, `fallback` for `default`. As keys
+  they're fine from 0.5: `body.default`, `#{ call: 1 }`; before 0.5 write `body["default"]`
+  and `#{ "call": 1 }`.
 - **In-place methods return `()`**: `s.trim()`, `s.replace(a, b)`, `a.sort()`, `a.reverse()`
   change the value and return nothing. Use `trimmed()`, `sorted()`, `reversed()`, or call the
   in-place method on its own line and use the variable afterwards.
