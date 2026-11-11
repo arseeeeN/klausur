@@ -1,7 +1,12 @@
 # Backlog
 
-Ideas for after the first release. [GAPS.md](GAPS.md) lists the smaller open items found while
-testing ai-search.
+Ideas for what comes next.
+
+## Streaming assertions
+
+SSE bodies are read completely before they're parsed, so the time to the first event can't be
+measured or asserted. Reading the stream as it arrives would allow `expect` on the first event's
+timing, and fits the stream type in the tools concept below.
 
 ## Browser end-to-end tests
 

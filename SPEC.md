@@ -872,8 +872,6 @@ Also implemented:
 - `parallel` tests and `-j N`
 - browser pages driven over the Chrome DevTools Protocol, *experimental* (§14)
 
-See [GAPS.md](GAPS.md) for what testing a real service turned up.
-
 Not yet: the recovery journal and `recover`, `fmt`, non-HTTP protocols, modifiers on
 functions, shrinking, OpenAPI generators, CI reporters, real per-file
 namespaces, the TUI.
