@@ -2267,3 +2267,27 @@ test "watched lines are complete lines" {
         out.all()
     );
 }
+
+#[test]
+fn large_uploads_arrive_whole() {
+    // The early-response check between body writes mustn't disturb an upload the server takes.
+    let server = start();
+    let p = project(
+        "large-upload",
+        r#"
+@echoText(text) {
+    connection { POST {{base}}/echo }
+    send = text
+}
+test "8 MB" {
+    let body = "0123456789abcdef"
+    for i in 0..19 { body += body }
+    let r = echoText(body)
+    expect r.status == 200
+    expect r.body.body.len() == 8 * 1024 * 1024 && r.body.body == body
+}
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+}
