@@ -2143,3 +2143,56 @@ fn long_labels_are_shortened() {
         out.all()
     );
 }
+
+#[test]
+fn cookie_jar() {
+    let server = start();
+    let p = project(
+        "cookies",
+        r#"
+@setCookie(name, value) { connection { GET {{base}}/set-cookie/{{name}}/{{value}} } }
+@echoGet() { connection { GET {{base}}/echo } }
+@echoWithCookie() {
+    connection {
+        GET {{base}}/echo
+        Cookie: mine=1
+    }
+}
+
+test "a jar keeps the cookies" cookies {
+    setCookie("sid", "abc")
+    setCookie("lang", "de")
+    expect echoGet().body.headers.cookie == "lang=de; sid=abc"
+    expect ctx.cookies.sid == "abc"
+}
+test "each case gets its own jar" (n in [1, 2]) cookies parallel {
+    expect echoGet().body.headers.cookie == ()
+    setCookie("n", n)
+    expect echoGet().body.headers.cookie == `n=${n}`
+}
+test "a cookie header set by the request wins" cookies {
+    setCookie("sid", "abc")
+    expect echoWithCookie().body.headers.cookie == "mine=1"
+}
+test "set_cookie" cookies {
+    set_cookie(`${base}/`, "token=xyz; Path=/")
+    expect echoGet().body.headers.cookie == "token=xyz"
+}
+test "undo requests use the jar" cookies rollback {
+    setCookie("sid", "abc")
+    undo("check", || {
+        let r = echoGet()
+        if r.body.headers.cookie != "sid=abc" { throw "no cookie in the undo" }
+    })
+}
+test "without the modifier, nothing is kept" {
+    setCookie("sid", "abc")
+    expect echoGet().body.headers.cookie == ()
+    expect ctx.cookies == ()
+}
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("7 passed"), "{}", out.all());
+}

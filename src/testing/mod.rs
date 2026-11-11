@@ -24,6 +24,7 @@ pub const BUILTIN_MODIFIERS: &[&str] = &[
     "skip",
     "only",
     "parallel",
+    "cookies",
     "label",
     "before",
     "after",
@@ -88,6 +89,8 @@ pub struct DefData {
     pub parallel: bool,
     /// `parallel("llm", 1)`: at most this many cases of the group run at once.
     pub group: Option<(String, usize)>,
+    /// `cookies`: each case keeps a cookie jar, like a browser.
+    pub cookies: bool,
     pub tags: Vec<String>,
 }
 
@@ -208,6 +211,7 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
         d.parallel = true;
         d.group = Some((group.to_string(), limit.max(1) as usize));
     });
+    engine.register_fn("cookies", |t: &mut TestDef| t.0.borrow_mut().cookies = true);
     engine.register_fn("tags", |t: &mut TestDef, tags: Array| {
         t.0.borrow_mut()
             .tags
@@ -695,6 +699,7 @@ pub fn run_case(
             .iter()
             .map(|(k, v)| (k.as_str().into(), v.clone()))
             .collect(),
+        cookies: def.cookies.then(Default::default),
         ..Default::default()
     })));
     let run = Rc::new(CaseRun {

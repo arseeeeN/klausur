@@ -199,6 +199,7 @@ Between the parameters and `{`, applied outside-in (the first wraps the others):
 | `label(expr)` | Case name in the report, e.g. `label(name)` or ``label(`${role} on ${path}`)`` |
 | `parallel` | May overlap with other `parallel` cases (`-j N`, default 4) |
 | `parallel("llm", 1)` (0.4+) | Parallel, but at most 1 case of the group `llm` at a time (for a slow or rate-limited resource) |
+| `cookies` (0.5+) | A cookie jar per case: requests (hooks and undos too) keep `Set-Cookie` and send the cookies back. Read with `ctx.cookies.sid`, add with `set_cookie(url, "sid=…; Path=/")`. A request's own `Cookie:` header wins |
 
 A user modifier is a function called on the test definition (`this`):
 

@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod builtins;
+pub mod cookies;
 pub mod early;
 pub mod engine;
 pub mod explain;
@@ -104,6 +105,8 @@ pub struct CtxData {
     /// Free-form values hooks can share with the test body (`ctx.user = …`).
     pub vars: Map,
     pub logs: Vec<String>,
+    /// The case's cookie jar, for tests marked `cookies`.
+    pub cookies: Option<cookies::Jar>,
 }
 
 /// A hook closure plus the unit it was defined in (needed to call it).

@@ -43,6 +43,15 @@ pub fn start() -> Server {
                 response.add_header(
                     tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
                 );
+                // `/set-cookie/<name>/<value>`: sets a cookie for the whole site.
+                if let ["", "set-cookie", name, value] =
+                    req.url().split('/').collect::<Vec<_>>().as_slice()
+                {
+                    let cookie = format!("{name}={value}; Path=/; HttpOnly");
+                    response.add_header(
+                        tiny_http::Header::from_bytes("Set-Cookie", cookie.as_bytes()).unwrap(),
+                    );
+                }
                 let _ = req.respond(response);
             });
         }
@@ -140,6 +149,7 @@ fn handle(state: &Mutex<State>, req: &tiny_http::Request, body: &str) -> (u16, O
                 (200, Some(json!({"attempts": *n})))
             }
         }
+        ("GET", ["set-cookie", ..]) => (200, Some(json!({"ok": true}))),
         (_, ["echo", ..]) => {
             let headers: serde_json::Map<String, Value> = req
                 .headers()

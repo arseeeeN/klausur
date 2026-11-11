@@ -444,6 +444,7 @@ is the test definition, which exposes:
 `ctx` is the context of one running case:
 - `ctx.headers`: default headers for every request
 - `ctx.test`, `ctx.args`: the test's name and arguments
+- `ctx.cookies`: the case's cookies, name → value, for tests marked `cookies` (§7.2)
 - `ctx.log(x)`
 - in test bodies, `ctx` is also a variable, so `ctx.answer = …` works
 - any other property, e.g. `ctx.user = …`, as free-form storage that the body can read
@@ -492,6 +493,12 @@ These are implemented in Rust on top of the same API:
 - `parallel`: the test's cases may run at the same time as other `parallel` cases (§7.4)
 - `parallel("llm")`, `parallel("db", 2)`: parallel, but at most 1 (or 2) cases of the group at
   once, e.g. for an LLM or a rate-limited service, while other `parallel` tests still overlap
+- `cookies`: each case gets a cookie jar, like a browser's. Every request of the case,
+  hooks and undos included, stores the cookies the response sets (`Set-Cookie`) and sends the
+  ones that apply to its URL (by domain, path, `Secure` and expiry). A request that sets its
+  own `Cookie` header sends only that one. Parallel cases each have their own jar.
+  `ctx.cookies` reads the jar (name → value; `()` without the modifier), and
+  `set_cookie(url, "name=value; Path=/")` adds a cookie as if `url` had set it.
 
 ### 7.3 Modifiers on requests and functions
 

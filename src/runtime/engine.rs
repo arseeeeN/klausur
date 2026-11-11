@@ -359,6 +359,13 @@ fn register_types(engine: &mut Engine, shared: &Rc<Shared>) {
         )
         .register_get("test", |c: &mut Ctx| c.0.borrow().test.clone())
         .register_get("args", |c: &mut Ctx| c.0.borrow().args.clone())
+        // `ctx.cookies`: name → value of the case's cookies (`()` without the `cookies` modifier).
+        .register_get("cookies", |c: &mut Ctx| {
+            c.0.borrow()
+                .cookies
+                .as_ref()
+                .map_or(Dynamic::UNIT, |jar| super::cookies::snapshot(jar).into())
+        })
         .register_indexer_get(|c: &mut Ctx, key: &str| {
             c.0.borrow().vars.get(key).cloned().unwrap_or(Dynamic::UNIT)
         })
@@ -368,6 +375,10 @@ fn register_types(engine: &mut Engine, shared: &Rc<Shared>) {
         .register_fn("to_string", |c: &mut Ctx| {
             format!("<context of {:?}>", c.0.borrow().test)
         });
+    let s = shared.clone();
+    engine.register_fn("set_cookie", move |url: &str, cookie: &str| {
+        super::cookies::set(&s, url, cookie)
+    });
     let s = shared.clone();
     engine.register_fn("log", move |c: &mut Ctx, v: Dynamic| {
         let text = value::display_plain(&v);

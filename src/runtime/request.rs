@@ -453,6 +453,7 @@ pub fn perform(
 ) -> R<(Map, Exchange)> {
     let mut prepared = build(shared, engine, body, scope)?;
     apply_middleware(shared, engine, &mut prepared)?;
+    super::cookies::attach(shared, &mut prepared);
     let mut exchange = Exchange {
         method: prepared.method.clone(),
         url: prepared.url.clone(),
@@ -511,6 +512,7 @@ pub fn perform(
         }
     };
     shared.state.borrow_mut().last_http_transient = http::is_transient_status(received.status);
+    super::cookies::store(shared, &prepared.url, &received.headers);
     exchange.status = Some(received.status);
     exchange.response_headers = received.headers.clone();
     exchange.response_body = Some(String::from_utf8_lossy(&received.body).into_owned());

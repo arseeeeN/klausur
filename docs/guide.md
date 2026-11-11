@@ -111,6 +111,10 @@ A modifier is a plain function called on the test definition (`this`). `before`,
 tests need (a set of documents, a customer with orders) are best as a modifier too, used with
 `rollback` so they're removed afterwards: `test "…" rollback with_customer() { … }`.
 
+For a site with session cookies (a login form, a CSRF token), mark the test `cookies` (0.5+):
+each case keeps a jar like a browser, so a login request in a `before` hook logs in every
+request after it. `ctx.cookies.JSESSIONID` reads a cookie.
+
 ## Tests
 
 ```
