@@ -938,7 +938,7 @@ is `page.locator(sel).click()`.
 | `url`, `title`, `html()` | The page's URL, title and HTML; `html_select(page.html(), sel)` works |
 | `evaluate(js)` | Run JavaScript in the page and return its result (promises are awaited) |
 | `console()` | Console errors and warnings, uncaught exceptions and dialogs so far |
-| `requests()`, `requests(glob)` | What the page requested so far: `#{method, url, body, status, error}` |
+| `requests()`, `requests(glob)` | What the page requested so far: `#{method, url, headers, body, status, error}` (header names in lowercase) |
 | `route(glob, response)` | Answer matching requests (see below); also on `browser()`, for all its pages |
 | `unroute(glob)` | Remove the routes for a glob |
 | `accept_dialogs()` | Accept dialogs from now on |

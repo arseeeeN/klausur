@@ -366,6 +366,14 @@ fn request_map(r: &page::Request) -> Dynamic {
     Dynamic::from(value::map_of([
         ("method", Dynamic::from(r.method.clone())),
         ("url", Dynamic::from(r.url.clone())),
+        (
+            "headers",
+            Dynamic::from(value::map_of(
+                r.headers
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), Dynamic::from(v.clone()))),
+            )),
+        ),
         ("body", r.body.clone().map_or(Dynamic::UNIT, Dynamic::from)),
         ("status", status),
         ("error", error),

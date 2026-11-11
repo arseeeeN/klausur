@@ -94,7 +94,7 @@ before the `expect`.
 ## Network
 
 - `page.requests()` / `page.requests("**/api/search*")`: what the page requested so far, as
-  `#{method, url, body, status, error}`; with `expect` this waits for a request to happen.
+  `#{method, url, headers, body, status, error}` (`headers` 0.5+, names in lowercase); with `expect` this waits for a request to happen.
 - `page.route(glob, response)` answers matching requests without the network, for things the
   test doesn't own (a third-party API, an endpoint another system serves, an error case):
 

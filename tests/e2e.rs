@@ -1498,6 +1498,7 @@ test "a mocked site and api" {
     let sent = page.requests("**/api/data*")
     expect sent.len() == 1
     expect sent[0].method == "POST" && sent[0].body == `{"ask":1}` && sent[0].status == 200
+    expect sent[0].headers["content-type"].starts_with("text/plain")
 }
 
 test "the newest route wins, and unroute removes it" {

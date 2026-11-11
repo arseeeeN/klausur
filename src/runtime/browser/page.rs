@@ -67,6 +67,8 @@ pub type Routes = Arc<Mutex<Vec<Route>>>;
 pub struct Request {
     pub method: String,
     pub url: String,
+    /// The request headers, names in lowercase.
+    pub headers: Vec<(String, String)>,
     pub body: Option<String>,
     /// The response status, or why the request failed.
     pub outcome: Option<Result<u16, String>>,
@@ -100,6 +102,14 @@ impl Net {
                 self.requests.push(Request {
                     method: method.to_string(),
                     url: url.to_string(),
+                    headers: r["headers"]
+                        .as_object()
+                        .into_iter()
+                        .flatten()
+                        .map(|(k, v)| {
+                            (k.to_lowercase(), v.as_str().unwrap_or_default().to_string())
+                        })
+                        .collect(),
                     body: r["postData"].as_str().map(str::to_string),
                     outcome: None,
                 });
