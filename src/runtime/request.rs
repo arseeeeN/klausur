@@ -235,6 +235,7 @@ fn poll_until(
     // `stable_for`: when the condition started to hold without a break, and the longest it did.
     let mut holding_since: Option<Instant> = None;
     let mut longest = Duration::ZERO;
+    let mut ever_held = false;
     loop {
         attempts += 1;
         let mut s = base.clone();
@@ -243,14 +244,21 @@ fn poll_until(
             Ok((result, exchange)) => {
                 let held = cond_holds(shared, engine, poll, &mut s, &result)
                     .map_err(|e| with_exchange(shared, e, &exchange))?;
+                ever_held |= held;
                 let settled = match (held, stable) {
                     (false, _) => false,
                     (true, None) => true,
-                    (true, Some(stable)) => {
-                        let since = *holding_since.get_or_insert_with(Instant::now);
-                        longest = longest.max(since.elapsed());
-                        since.elapsed() >= stable
-                    }
+                    (true, Some(stable)) => match holding_since {
+                        // The first success of a streak: it has held for no time yet.
+                        None => {
+                            holding_since = Some(Instant::now());
+                            stable.is_zero()
+                        }
+                        Some(since) => {
+                            longest = longest.max(since.elapsed());
+                            since.elapsed() >= stable
+                        }
+                    },
                 };
                 if settled {
                     *scope = s;
@@ -272,7 +280,7 @@ fn poll_until(
         let gave_up = if elapsed + every > within {
             let times = if attempts == 1 { "time" } else { "times" };
             let what = match stable {
-                Some(stable) if longest > Duration::ZERO || holding_since.is_some() => {
+                Some(stable) if ever_held => {
                     let at_most = if longest > Duration::ZERO {
                         format!(" (at most {})", crate::testing::humantime(longest))
                     } else {

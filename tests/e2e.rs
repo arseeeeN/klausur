@@ -2521,8 +2521,9 @@ fn poll_until_stable() {
     connection { GET {{base}}/flicker/{{key}}?alternate=1 }
 }
 test "until stops at the first success" { expect once("a").body.n == 2 }
-// 503, 200, 503: the first success doesn't count; then 200 from the 4th on, for 200 ms.
-test "stable_for waits until it has held long enough" { expect settled("b").body.n >= 8 }
+// 503, 200, 503: the first success doesn't count. The streak starts at the 4th response, so
+// holding for 200 ms takes at least one more (how many depends on the machine's speed).
+test "stable_for waits until it has held long enough" { expect settled("b").body.n >= 5 }
 test "it fails when it never holds long enough" { neverSettles("c") }
 "#,
     );
@@ -2541,4 +2542,6 @@ test "it fails when it never holds long enough" { neverSettles("c") }
         "{}",
         out.all()
     );
+    // It never held twice in a row, so there is no longest streak to report.
+    assert!(!out.stdout.contains("at most"), "{}", out.all());
 }
