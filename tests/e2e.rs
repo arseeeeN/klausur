@@ -2490,8 +2490,15 @@ test "watched lines are complete lines" {
     let out = p.run(&server, &["test"]);
     assert_eq!(out.code, 1, "{}", out.all());
     assert!(out.stdout.contains("6 passed, 1 failed"), "{}", out.all());
+    // The report wraps long lines, and where depends on the temp path: compare the words.
+    let words: Vec<&str> = out
+        .stdout
+        .split_whitespace()
+        .filter(|w| *w != "|")
+        .collect();
     assert!(
-        out.stdout
+        words
+            .join(" ")
             .contains("isn't UTF-8 text; `read_blob(path)` reads it as bytes"),
         "{}",
         out.all()
