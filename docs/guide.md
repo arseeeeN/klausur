@@ -111,6 +111,18 @@ A modifier is a plain function called on the test definition (`this`). `before`,
 tests need (a set of documents, a customer with orders) are best as a modifier too, used with
 `rollback` so they're removed afterwards: `test "…" rollback with_customer() { … }`.
 
+A fixture that every test of a file shares and that is slow to make, such as a config change
+the server first has to load, can be made once per file (0.5+):
+
+```
+setup mail_off()                                   // its undos run after the file's last test
+setup let admin = createUser(role: "admin").body   // a value for the file's tests
+teardown log("done")                               // custom cleanup, runs first at the end
+```
+
+Keep it for fixtures the tests only read: a test that changes a shared fixture makes the
+others depend on the order they run in.
+
 For a site with session cookies (a login form, a CSRF token), mark the test `cookies` (0.5+):
 each case keeps a jar like a browser, so a login request in a `before` hook logs in every
 request after it. `ctx.cookies.JSESSIONID` reads a cookie.

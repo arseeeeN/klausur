@@ -264,8 +264,25 @@ pub fn global(shared: &Rc<Shared>, engine: &Engine, name: &str) -> R<Option<Dyna
         let Some(g) = globals.get(name) else {
             return Ok(None);
         };
-        if let Some(v) = &g.value {
+        // A `setup let` belongs to its file: other files' tests mustn't see it, even when it is
+        // set because that file ran first. Setup and teardown themselves run outside a test.
+        let own_file = |file| {
+            shared
+                .current_case()
+                .is_none_or(|c| c.run.as_ref().is_none_or(|r| r.test.file == file))
+        };
+        if let Some(v) = &g.value
+            && g.setup.is_none_or(own_file)
+        {
             return Ok(Some(v.clone()));
+        }
+        if let Some(file) = g.setup {
+            let file = shared.sources.get(file).name.clone();
+            return Err(Failure::new(format!(
+                "`{name}` is set by `setup` in {file}, which runs only before the tests of that file"
+            ))
+            .at(g.span)
+            .into_err());
         }
         if g.evaluating {
             return Err(Failure::new(format!("`{name}` depends on itself"))

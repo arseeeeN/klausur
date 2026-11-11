@@ -205,3 +205,37 @@ test "t" { expect helper(1) == 3 }
                     (ExprLit
                       (Lit
                         (lit_int)))))))))))))
+
+================================================================================
+Setup and teardown
+================================================================================
+
+setup mail_off()
+setup let admin = createUser()
+teardown { restore() }
+
+--------------------------------------------------------------------------------
+
+(Rhai
+  (Setup
+    (Expr
+      (ExprCall
+        (Expr (ExprPath (Path (ident))))
+        (ArgList))))
+  (Setup
+    (Expr
+      (ExprDeclareVar
+        (ident)
+        (Expr
+          (ExprCall
+            (Expr (ExprPath (Path (ident))))
+            (ArgList))))))
+  (Setup
+    (Expr
+      (ExprBlock
+        (Stmt
+          (Item
+            (Expr
+              (ExprCall
+                (Expr (ExprPath (Path (ident))))
+                (ArgList)))))))))

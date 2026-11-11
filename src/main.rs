@@ -17,7 +17,8 @@ use report::{Reporter, render_failure};
 use rhai::{Dynamic, Map, Scope};
 use runtime::Config;
 use runtime::value::{self, display};
-use std::collections::{BTreeMap, HashMap};
+use source::FileId;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -585,11 +586,25 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
         }
     }
 
+    // Files with `setup`/`teardown`: how many of their cases will run, and the last one.
+    let mut fixtures: HashMap<FileId, FileFixture> = HashMap::new();
+    for (seq, step) in steps.iter().enumerate() {
+        if let Step::Case { test, .. } = step
+            && program.setups.contains_key(&test.file)
+        {
+            let f = fixtures.entry(test.file).or_default();
+            f.pending += 1;
+            f.last_seq = seq;
+        }
+    }
     let pool = steps
         .iter()
         .any(|s| matches!(s, Step::Case { parallel: true, .. }))
         .then(|| parallel::Pool::start(jobs, &paths, opts.clone()));
     let mut run = Schedule {
+        program: &program,
+        seed,
+        fixtures,
         pool,
         reporter: &mut reporter,
         stop_on_dirty: on_dirty == OnDirty::Abort,
@@ -612,6 +627,7 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
             Step::Error(file, name, f) => run.finish(seq, Done::Error(file, name, f)),
             Step::Case {
                 file,
+                test,
                 test_idx,
                 case_idx,
                 parallel: true,
@@ -624,7 +640,11 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
                 if run.stopped || interrupted.load(Ordering::SeqCst) {
                     break;
                 }
-                run.send(seq, file, test_idx, case_idx, group);
+                if !run.set_up(seq, &file, &test) {
+                    continue;
+                }
+                let values = run.values(test.file);
+                run.send(seq, file, test.file, test_idx, case_idx, group, values);
             }
             Step::Case {
                 file,
@@ -639,9 +659,12 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
                 if run.stopped || interrupted.load(Ordering::SeqCst) {
                     break;
                 }
+                if !run.set_up(seq, &file, &test) {
+                    continue;
+                }
                 let spec = spec.expect("serial cases keep their spec");
                 let result = testing::run_case(shared, engine, &test, &def.0.borrow(), spec);
-                run.finish(seq, Done::Case(file, result));
+                run.case_done(seq, file, test.file, result);
             }
         }
     }
@@ -700,6 +723,10 @@ enum Done {
     Skipped(String, String, String),
     Error(String, String, runtime::Failure),
     Case(String, testing::CaseResult),
+    /// A file's `setup` or `teardown`.
+    Fixture(String, testing::CaseResult),
+    /// A case that didn't run because its file's setup failed (its test is reported once).
+    Silent,
 }
 
 fn report_done(reporter: &mut Reporter, d: Done) {
@@ -707,21 +734,43 @@ fn report_done(reporter: &mut Reporter, d: Done) {
         Done::Skipped(file, name, reason) => reporter.skipped(&file, &name, &reason),
         Done::Error(file, name, f) => reporter.test_error(&file, &name, f),
         Done::Case(file, r) => reporter.case(&file, r),
+        Done::Fixture(file, r) => reporter.fixture(&file, r),
+        Done::Silent => {}
     }
+}
+
+/// The `setup`/`teardown` state of one file in a run.
+#[derive(Default)]
+struct FileFixture {
+    /// Cases of the file that haven't finished yet.
+    pending: usize,
+    /// The file's last case: the teardown is reported after it.
+    last_seq: usize,
+    started: bool,
+    torn_down: bool,
+    failed: bool,
+    /// Tests already reported as not run because the setup failed.
+    not_run: HashSet<String>,
+    fixture: testing::fixture::Fixture,
+    values: Arc<Vec<(String, serde_json::Value)>>,
 }
 
 /// Runs planned steps: `parallel` cases on the worker pool, everything else on this thread,
 /// and prints results in declaration order.
 struct Schedule<'r, 'a> {
+    program: &'r load::Program,
+    seed: u64,
+    fixtures: HashMap<FileId, FileFixture>,
     pool: Option<parallel::Pool>,
     reporter: &'r mut Reporter<'a>,
     stop_on_dirty: bool,
     /// `--fail-fast`: stop scheduling after the first failure.
     fail_fast: bool,
-    /// Finished steps that wait for earlier ones before they're printed.
-    done: BTreeMap<usize, Done>,
+    /// Finished steps that wait for earlier ones before they're printed; a step can come with
+    /// its file's setup or teardown.
+    done: BTreeMap<usize, Vec<Done>>,
     /// The file of each case on the pool.
-    files: HashMap<usize, String>,
+    files: HashMap<usize, (String, FileId)>,
     /// The group of each case on the pool, and how many of each group are running.
     groups: HashMap<usize, String>,
     running: HashMap<String, usize>,
@@ -733,23 +782,127 @@ struct Schedule<'r, 'a> {
 }
 
 impl Schedule<'_, '_> {
+    #[allow(clippy::too_many_arguments)]
     fn send(
         &mut self,
         seq: usize,
         file: String,
+        file_id: FileId,
         test: usize,
         case: usize,
         group: Option<(String, usize)>,
+        values: Arc<Vec<(String, serde_json::Value)>>,
     ) {
         if let Some(pool) = &self.pool {
-            self.files.insert(seq, file);
+            self.files.insert(seq, (file, file_id));
             if let Some((name, _)) = group {
                 *self.running.entry(name.clone()).or_default() += 1;
                 self.groups.insert(seq, name);
             }
-            pool.send(parallel::Job { seq, test, case });
+            pool.send(parallel::Job {
+                seq,
+                test,
+                case,
+                values,
+            });
             self.in_flight += 1;
         }
+    }
+
+    /// Before a case: run its file's setup if that hasn't happened yet. Returns whether the
+    /// case may run; if the setup failed, the case is reported as not run.
+    fn set_up(&mut self, seq: usize, file: &str, test: &testing::TestRt) -> bool {
+        let Some(f) = self.fixtures.get_mut(&test.file) else {
+            return true;
+        };
+        if !f.started {
+            f.started = true;
+            // Earlier files' cases may still run on the pool, and their fixtures could clash with
+            // this one (two files that both write the same config): let them finish first.
+            while self.in_flight > 0 {
+                self.receive();
+            }
+            let f = self.fixtures.get_mut(&test.file).expect("checked above");
+            let steps = &self.program.setups[&test.file];
+            let (result, fixture) = testing::fixture::setup(
+                &self.program.shared,
+                &self.program.engine,
+                test.file,
+                steps,
+                self.seed,
+            );
+            f.failed = result.outcome.is_err();
+            f.values = Arc::new(fixture.values.clone());
+            f.fixture = fixture;
+            let failed = f.failed;
+            self.record(seq, Done::Fixture(file.to_string(), result));
+            if failed {
+                // Clean up what the setup did before it failed.
+                self.tear_down(test.file, file, Some(seq));
+            }
+        }
+        let f = self.fixtures.get_mut(&test.file).expect("checked above");
+        if !f.failed {
+            return true;
+        }
+        let d = if f.not_run.insert(test.name.clone()) {
+            Done::Skipped(file.to_string(), test.name.clone(), "setup failed".into())
+        } else {
+            Done::Silent
+        };
+        self.case_finished(seq, file, test.file, d);
+        false
+    }
+
+    fn values(&self, file: FileId) -> Arc<Vec<(String, serde_json::Value)>> {
+        self.fixtures
+            .get(&file)
+            .map(|f| f.values.clone())
+            .unwrap_or_default()
+    }
+
+    /// A case finished: record it, and run its file's teardown after the file's last case.
+    fn case_done(&mut self, seq: usize, file: String, file_id: FileId, r: testing::CaseResult) {
+        let name = file.clone();
+        self.case_finished(seq, &name, file_id, Done::Case(file, r));
+    }
+
+    fn case_finished(&mut self, seq: usize, file: &str, file_id: FileId, d: Done) {
+        self.record(seq, d);
+        let teardown = match self.fixtures.get_mut(&file_id) {
+            Some(f) => {
+                f.pending = f.pending.saturating_sub(1);
+                f.pending == 0
+            }
+            None => false,
+        };
+        if teardown {
+            self.tear_down(file_id, file, None);
+        }
+        self.flush();
+    }
+
+    /// Run a file's teardown, reported after the step `at` (by default the file's last case).
+    fn tear_down(&mut self, file_id: FileId, file: &str, at: Option<usize>) {
+        let Some(f) = self.fixtures.get_mut(&file_id) else {
+            return;
+        };
+        if !f.started || f.torn_down {
+            return;
+        }
+        f.torn_down = true;
+        let actions = std::mem::take(&mut f.fixture.actions);
+        let last = at.unwrap_or(f.last_seq);
+        if actions.is_empty() {
+            return;
+        }
+        let result = testing::fixture::teardown(
+            &self.program.shared,
+            &self.program.engine,
+            actions,
+            self.seed,
+        );
+        self.record(last, Done::Fixture(file.to_string(), result));
     }
 
     /// Whether the group already runs as many cases as it may.
@@ -771,31 +924,47 @@ impl Schedule<'_, '_> {
         {
             *n = n.saturating_sub(1);
         }
-        let file = self.files.remove(&seq).unwrap_or_default();
-        self.finish(seq, Done::Case(file, result));
+        let (file, file_id) = self.files.remove(&seq).unwrap_or_default();
+        self.case_done(seq, file, file_id, result);
     }
 
     /// Record a finished step and print whatever is ready. A dirty case stops the run unless
     /// `--on-dirty=continue`; cases already on the pool still finish.
     fn finish(&mut self, seq: usize, d: Done) {
-        if let Done::Case(_, r) = &d
+        self.record(seq, d);
+        self.flush();
+    }
+
+    fn record(&mut self, seq: usize, d: Done) {
+        if let Done::Case(_, r) | Done::Fixture(_, r) = &d
             && !r.dirty.is_empty()
             && self.stop_on_dirty
         {
             self.stopped = true;
         }
         let failed = match &d {
-            Done::Case(_, r) => r.outcome.is_err(),
+            Done::Case(_, r) | Done::Fixture(_, r) => r.outcome.is_err(),
             Done::Error(..) => true,
-            Done::Skipped(..) => false,
+            Done::Skipped(..) | Done::Silent => false,
         };
         if failed && self.fail_fast && !self.stopped {
             self.stopped = true;
             self.failed = true;
         }
-        self.done.insert(seq, d);
-        while let Some(d) = self.done.remove(&self.next) {
-            report_done(self.reporter, d);
+        self.done.entry(seq).or_default().push(d);
+    }
+
+    /// Print the finished steps that are next in order. A step is complete once its case (or
+    /// what replaces it) is there; a setup recorded ahead of it waits.
+    fn flush(&mut self) {
+        while self
+            .done
+            .get(&self.next)
+            .is_some_and(|ds| ds.iter().any(|d| !matches!(d, Done::Fixture(..))))
+        {
+            for d in self.done.remove(&self.next).unwrap_or_default() {
+                report_done(self.reporter, d);
+            }
             self.next += 1;
         }
     }
@@ -803,8 +972,21 @@ impl Schedule<'_, '_> {
     /// Print what finished after a gap left by steps that never ran.
     fn end(mut self) {
         self.pool = None;
-        for (_, d) in std::mem::take(&mut self.done) {
-            report_done(self.reporter, d);
+        // Files stopped before their last case still get their teardown.
+        let open: Vec<FileId> = self
+            .fixtures
+            .iter()
+            .filter(|(_, f)| f.started && !f.torn_down)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in open {
+            let name = self.program.shared.sources.get(id).name.clone();
+            self.tear_down(id, &name, None);
+        }
+        for (_, ds) in std::mem::take(&mut self.done) {
+            for d in ds {
+                report_done(self.reporter, d);
+            }
         }
         if self.stopped && self.failed {
             self.reporter.summary.stopped_failed = true;

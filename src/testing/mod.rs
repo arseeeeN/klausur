@@ -1,5 +1,6 @@
 //! Tests: definitions built by modifiers, case expansion, and running cases through hooks.
 
+pub mod fixture;
 pub mod generators;
 
 use crate::runtime::undo::{self, DirtyReport, ScopeKind};

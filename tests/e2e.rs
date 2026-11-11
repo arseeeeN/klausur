@@ -2198,6 +2198,182 @@ test "without the modifier, nothing is kept" {
 }
 
 #[test]
+fn setup_and_teardown() {
+    let server = start();
+    let p = project(
+        "setup",
+        r#"
+// A user for the whole file: its undo deletes it after the last test.
+setup let admin = createUser(name: "setup-admin").body
+setup {
+    write_file("out/marker.txt", "x")
+    undo("remove the marker", || remove_file("out/marker.txt"))
+}
+// Runs first at the end: teardowns and undos unwind in reverse order.
+teardown write_file("out/teardown.txt", `marker was there: ${file_exists("out/marker.txt")}`)
+
+test "a setup value" { expect admin.name == "setup-admin" }
+test "parallel cases get it too" (n in 1..=3) parallel { expect admin.id > 0 && getUser(admin.id).status == 200 }
+test "setup ran once" { expect file_exists("out/marker.txt") }
+"#,
+    );
+    let out = p.run(&server, &["test", "-j", "3"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("5 passed"), "{}", out.all());
+    assert!(out.stdout.contains("· setup"), "{}", out.all());
+    assert!(out.stdout.contains("· teardown"), "{}", out.all());
+    // The user setup created is deleted, the marker removed, and the teardown ran before that.
+    assert!(server.state.lock().unwrap().users.is_empty());
+    assert!(!p.path("out/marker.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(p.path("out/teardown.txt")).unwrap(),
+        "marker was there: true"
+    );
+}
+
+#[test]
+fn a_failed_setup_skips_the_files_tests() {
+    let server = start();
+    let p = project(
+        "setup-fails",
+        r#"
+setup let u = createUser(name: "first").body
+setup createUser(name: "conflict")
+test "a" { expect true }
+test "b" (n in [1, 2]) { expect true }
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in ["✗ setup", "○ a — setup failed", "○ b — setup failed"] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+    assert_eq!(out.stdout.matches("○ b").count(), 1, "{}", out.all());
+    assert_eq!(out.stdout.matches("✗ setup").count(), 1, "{}", out.all());
+    // What the setup did before it failed is cleaned up.
+    assert!(server.state.lock().unwrap().users.is_empty());
+}
+
+#[test]
+fn setup_needs_tests_in_its_file() {
+    let server = start();
+    let p = Project::new("setup-lib");
+    p.file("lib.kl", "setup log(1)\n");
+    p.file(
+        "t.test.kl",
+        "import \"lib.kl\"\ntest \"a\" { expect true }\n",
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 2, "{}", out.all());
+    assert!(
+        out.all().contains("this file has no tests for `setup`"),
+        "{}",
+        out.all()
+    );
+}
+
+#[test]
+fn a_failed_teardown_is_dirty() {
+    let server = start();
+    let p = project(
+        "teardown-fails",
+        r#"
+teardown { throw "the cleanup broke" }
+test "a" { expect true }
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 3, "{}", out.all());
+    assert!(out.stdout.contains("teardown"), "{}", out.all());
+    assert!(out.stdout.contains("DIRTY"), "{}", out.all());
+    assert!(out.all().contains("the cleanup broke"), "{}", out.all());
+}
+
+#[test]
+fn setup_values_belong_to_their_file() {
+    let server = start();
+    let p = Project::new("setup-own-file");
+    p.file(
+        "a.test.kl",
+        "setup let common = 1\ntest \"a\" { expect common == 1 }\n",
+    );
+    p.file("b.test.kl", "test \"b\" { expect common == 1 }\n");
+    // Whichever file runs first, b can't see a's value.
+    for order in [["a.test.kl", "b.test.kl"], ["b.test.kl", "a.test.kl"]] {
+        let out = p.run(&server, &["test", order[0], order[1]]);
+        assert_eq!(out.code, 1, "{}", out.all());
+        assert!(out.stdout.contains("✓ a"), "{}", out.all());
+        assert!(out.stdout.contains("✗ b"), "{}", out.all());
+        assert!(
+            out.stdout
+                .contains("`common` is set by `setup` in a.test.kl"),
+            "{}",
+            out.all()
+        );
+    }
+    // `klausur run` doesn't run setup.
+    p.file(
+        "a.test.kl",
+        "setup let common = 1\nfn value() { common }\ntest \"a\" { expect true }\n",
+    );
+    let out = p.run(&server, &["run", "a.test.kl#value"]);
+    assert_ne!(out.code, 0, "{}", out.all());
+    assert!(out.all().contains("is set by `setup`"), "{}", out.all());
+}
+
+#[test]
+fn setup_has_no_ctx() {
+    let server = start();
+    let p = project(
+        "setup-ctx",
+        "setup ctx.user = 1\ntest \"a\" { expect true }\n",
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    assert!(
+        out.stdout.contains("there's no `ctx` in `setup`"),
+        "{}",
+        out.all()
+    );
+}
+
+#[test]
+fn teardown_runs_when_the_run_stops_early() {
+    let server = start();
+    let p = project(
+        "setup-fail-fast",
+        r#"
+setup {
+    write_file("out/marker.txt", "x")
+    undo(|| remove_file("out/marker.txt"))
+}
+test "a" { expect false }
+test "b" { expect true }
+"#,
+    );
+    let out = p.run(&server, &["test", "--fail-fast"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    assert!(!out.stdout.contains("✓ b"), "{}", out.all());
+    assert!(out.stdout.contains("· teardown"), "{}", out.all());
+    assert!(!p.path("out/marker.txt").exists());
+}
+
+#[test]
+fn setup_runs_only_if_a_test_of_its_file_runs() {
+    let server = start();
+    let p = Project::new("setup-filtered");
+    p.file(
+        "a.test.kl",
+        "setup write_file(\"out/a-setup.txt\", \"x\")\ntest \"in a\" { expect true }\n",
+    );
+    p.file("b.test.kl", "test \"in b\" { expect true }\n");
+    let out = p.run(&server, &["test", ".", "in b"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(!out.stdout.contains("setup"), "{}", out.all());
+    assert!(!p.path("out/a-setup.txt").exists());
+}
+
+#[test]
 fn template_strings_are_rewritten() {
     let server = start();
     let p = project(
@@ -2213,6 +2389,60 @@ test "nested" { expect `a${ `b${m.default}` }c` == "ab1c" }
     let out = p.run(&server, &["test"]);
     assert_eq!(out.code, 0, "{}", out.all());
     assert!(out.stdout.contains("3 passed"), "{}", out.all());
+}
+
+#[test]
+fn setup_waits_for_the_cases_of_earlier_files() {
+    let server = start();
+    let p = Project::new("setup-waits");
+    p.file("api.kl", API);
+    p.file(
+        "a.test.kl",
+        r#"import "api.kl"
+test "a" (n in 1..=2) parallel {
+    write_file(`out/a${n}`, "running")
+    slow(300)
+    remove_file(`out/a${n}`)
+}
+"#,
+    );
+    p.file(
+        "b.test.kl",
+        r#"import "api.kl"
+setup {
+    slow(150) // the cases of a.test.kl are under way by now, unless setup waited for them
+    expect !file_exists("out/a1") && !file_exists("out/a2")
+}
+test "b" parallel { expect true }
+"#,
+    );
+    let out = p.run(&server, &["test", "a.test.kl", "b.test.kl", "-j", "4"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("3 passed"), "{}", out.all());
+}
+
+#[test]
+fn large_uploads_arrive_whole() {
+    // The early-response check between body writes mustn't disturb an upload the server takes.
+    let server = start();
+    let p = project(
+        "large-upload",
+        r#"
+@echoText(text) {
+    connection { POST {{base}}/echo }
+    send = text
+}
+test "8 MB" {
+    let body = "0123456789abcdef"
+    for i in 0..19 { body += body }
+    let r = echoText(body)
+    expect r.status == 200
+    expect r.body.body.len() == 8 * 1024 * 1024 && r.body.body == body
+}
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 0, "{}", out.all());
 }
 
 #[test]
@@ -2266,28 +2496,4 @@ test "watched lines are complete lines" {
         "{}",
         out.all()
     );
-}
-
-#[test]
-fn large_uploads_arrive_whole() {
-    // The early-response check between body writes mustn't disturb an upload the server takes.
-    let server = start();
-    let p = project(
-        "large-upload",
-        r#"
-@echoText(text) {
-    connection { POST {{base}}/echo }
-    send = text
-}
-test "8 MB" {
-    let body = "0123456789abcdef"
-    for i in 0..19 { body += body }
-    let r = echoText(body)
-    expect r.status == 200
-    expect r.body.body.len() == 8 * 1024 * 1024 && r.body.body == body
-}
-"#,
-    );
-    let out = p.run(&server, &["test"]);
-    assert_eq!(out.code, 0, "{}", out.all());
 }

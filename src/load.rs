@@ -27,6 +27,17 @@ pub struct Program {
     pub requests: Vec<Rc<RequestRt>>,
     pub fns: Vec<FnInfo>,
     pub roots: Vec<FileId>,
+    /// `setup` and `teardown` of each test file, in order.
+    pub setups: HashMap<FileId, Vec<(Span, SetupStep)>>,
+}
+
+/// One `setup`/`teardown` item, compiled.
+#[derive(Clone)]
+pub enum SetupStep {
+    Run(usize),
+    /// `setup let name = …`
+    Let(String, usize),
+    Teardown(usize),
 }
 
 pub struct FnInfo {
@@ -78,6 +89,18 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
     let mut fn_decls: HashMap<String, FnDecl> = HashMap::new();
     for (file, f) in files.iter().enumerate() {
         let mut test_names: HashMap<&str, Span> = HashMap::new();
+        // `setup` runs for the tests of its own file, so a file with `setup` needs tests.
+        if !f.items.iter().any(|i| matches!(i, Item::Test(_)))
+            && let Some(Item::Setup(s)) = f.items.iter().find(|i| matches!(i, Item::Setup(_)))
+        {
+            diags.push(
+                Diag::at(
+                    s.span,
+                    "this file has no tests for `setup` and `teardown` to run for",
+                )
+                .help("put them in the test file whose tests need them"),
+            );
+        }
         for item in &f.items {
             let (name, span) = match item {
                 Item::Fn(d) => {
@@ -85,7 +108,11 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
                     (&d.name, d.name_span)
                 }
                 Item::Request(r) => (&r.name, r.name_span),
-                Item::Let(l) => {
+                Item::Let(l)
+                | Item::Setup(syntax::SetupDecl {
+                    kind: syntax::SetupKind::Let(l),
+                    ..
+                }) => {
                     if let Some(prev) = lets.insert(l.name.clone(), l.name_span) {
                         diags.push(
                             Diag::at(l.name_span, format!("`{}` is defined twice", l.name))
@@ -106,7 +133,7 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
                     }
                     continue;
                 }
-                Item::Import(_) => continue,
+                Item::Import(_) | Item::Setup(_) => continue,
             };
             defs.entry(file).or_default().insert(name.clone());
             if let Some(prev) = symbols.insert(name.clone(), span) {
@@ -221,6 +248,7 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
     // Requests, globals and tests.
     let mut requests = Vec::new();
     let mut tests = Vec::new();
+    let mut setups: HashMap<FileId, Vec<(Span, SetupStep)>> = HashMap::new();
     for (file, f) in files.iter().enumerate() {
         for item in &f.items {
             match item {
@@ -256,8 +284,39 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
                                 span: l.name_span,
                                 value: None,
                                 evaluating: false,
+                                setup: None,
                             },
                         );
+                    }
+                }
+                Item::Setup(s) => {
+                    let step = match &s.kind {
+                        syntax::SetupKind::Run(code) => {
+                            c.code_unit(&engine, file, *code).map(SetupStep::Run)
+                        }
+                        syntax::SetupKind::Teardown(code) => {
+                            c.code_unit(&engine, file, *code).map(SetupStep::Teardown)
+                        }
+                        syntax::SetupKind::Let(l) => {
+                            c.expr_unit(&engine, file, l.expr).map(|unit| {
+                                shared.globals.borrow_mut().insert(
+                                    l.name.clone(),
+                                    GlobalVar {
+                                        unit,
+                                        span: l.name_span,
+                                        value: None,
+                                        evaluating: false,
+                                        setup: Some(file),
+                                    },
+                                );
+                                SetupStep::Let(l.name.clone(), unit)
+                            })
+                        }
+                    };
+                    if let Some(step) = step
+                        && roots.contains(&file)
+                    {
+                        setups.entry(file).or_default().push((s.span, step));
                     }
                 }
                 Item::Test(t) if roots.contains(&file) => {
@@ -290,6 +349,7 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
         requests,
         fns,
         roots,
+        setups,
     })
 }
 
@@ -536,6 +596,18 @@ impl Compiler<'_> {
     fn expr_unit(&mut self, engine: &Engine, file: FileId, span: Span) -> Option<usize> {
         let code = self.build(file, span, |r, out| r.rewrite(span.start, span.end, out))?;
         self.compile(engine, file, code)
+    }
+
+    /// An expression, or a `{ … }` block of statements.
+    fn code_unit(&mut self, engine: &Engine, file: FileId, code: syntax::Code) -> Option<usize> {
+        if !code.block {
+            return self.expr_unit(engine, file, code.span);
+        }
+        let span = code.span;
+        let built = self.build(file, span, |r, out| {
+            r.rewrite_block(span.start + 1, span.end - 1, out)
+        })?;
+        self.compile(engine, file, built)
     }
 
     fn expect_unit(&mut self, engine: &Engine, file: FileId, span: Span) -> Option<usize> {

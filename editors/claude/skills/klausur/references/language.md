@@ -20,6 +20,9 @@ const ADMIN = "admin"
 fn helper(x, y = 2) { x + y }           // Rhai function, defaults and named args allowed
 @createUser(name, role = "user") { … }  // request block
 test "a user can be created" rollback { … }
+setup mail_off()                        // 0.5+: once before the file's tests (see Undo and scopes)
+setup let admin = createUser(role: "admin").body
+teardown restore_config()
 ```
 
 All loaded files share **one namespace**: a name defined in two files is a load error. Put
@@ -229,6 +232,13 @@ Hooks: `this.before(|ctx| …)`, `this.after(|ctx, result| …)` (`result.passed
 - Outside any scope (e.g. `klausur run`), undo actions aren't registered; klausur says so.
 - A failed undo marks the case **dirty**; the run stops (unless `--on-dirty=continue`), lists
   what's left behind, and exits with 3.
+- **Per file (0.5+):** `setup <expr>`, `setup { … }` and `setup let x = <expr>` run once before
+  the file's first case; undos registered in them, and `teardown <expr>` / `teardown { … }`,
+  run once after its last case, in reverse order of declaration. Use it for slow fixtures
+  every test shares (a config change the server must pick up, an admin user). A failed setup
+  skips the file's tests; a failed teardown is dirty. No `ctx` or cookies in setup; `setup let`
+  values must be data (parallel cases get a copy) and only the file's own tests see them.
+  Prefer per-case fixtures (`rollback` + a modifier) when tests change the fixture.
 
 ## Built-ins
 

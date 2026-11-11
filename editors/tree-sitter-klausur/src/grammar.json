@@ -19,6 +19,10 @@
           },
           {
             "type": "SYMBOL",
+            "name": "Setup"
+          },
+          {
+            "type": "SYMBOL",
             "name": "Stmt"
           }
         ]
@@ -2504,6 +2508,36 @@
           "value": "\\/\\*\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*\\/"
         }
       }
+    },
+    "Setup": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "keyword",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "setup"
+              },
+              {
+                "type": "STRING",
+                "value": "teardown"
+              }
+            ]
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "body",
+          "content": {
+            "type": "SYMBOL",
+            "name": "Expr"
+          }
+        }
+      ]
     },
     "Request": {
       "type": "SEQ",

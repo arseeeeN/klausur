@@ -19,6 +19,8 @@ pub struct Job {
     pub seq: usize,
     pub test: usize,
     pub case: usize,
+    /// `setup let` values of the test's file.
+    pub values: Arc<Vec<(String, serde_json::Value)>>,
 }
 
 pub struct Pool {
@@ -127,6 +129,7 @@ fn run(
 ) -> CaseResult {
     let shared = &program.shared;
     let engine = &program.engine;
+    testing::fixture::receive_values(shared, &job.values);
     let test = &program.tests[job.test];
     let entry = tests.entry(job.test).or_insert_with(|| {
         let def = testing::build_def(shared, engine, test)?;

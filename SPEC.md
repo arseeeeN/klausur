@@ -58,6 +58,8 @@ A file is a sequence of top-level items. Their order doesn't matter, except for
 | Request | `@name(params) modifiers { … }` |
 | Test | `test "name" (params) modifiers { … }` |
 | Import | `import "path.kl"` / `import "path.kl" as ns` |
+| Setup | `setup expr`, `setup { … }`, `setup let name = expr` (§8.7) |
+| Teardown | `teardown expr`, `teardown { … }` (§8.7) |
 
 Imports are resolved relative to the importing file, and each file is loaded once. In this
 version, all requests and functions share **one namespace** across files. An alias
@@ -580,7 +582,8 @@ test "indexing needs the write role" (role in ["none", "reader", "admin"]) paral
   gives.
 
 Each worker thread loads its own copy of the files. Top-level `let`s are evaluated once per
-worker, and `cases` sources are read once per worker. With `-v`, the request trace of a
+worker, and `cases` sources are read once per worker. `setup` runs once, on the main thread;
+workers get the values of `setup let` as data (§8.7). With `-v`, the request trace of a
 `parallel` case goes into its log rather than straight to stderr, so it isn't interleaved.
 
 ---
@@ -665,6 +668,42 @@ fn provision_customer(name) {
 Despite the name, `transaction` gives no atomicity or isolation. Other clients
 can see the intermediate state, and undo is a best-effort compensation (the saga
 pattern).
+
+### 8.7 Setup and teardown per file
+
+A fixture that every test of a file needs, and that is slow to make (a config change the
+server has to pick up, a user with a role), can be made once for the file:
+
+```
+setup mail_off()                                  // any expression
+setup {                                           // or a block
+    write_file("out/marker.txt", "x")
+    undo(|| remove_file("out/marker.txt"))
+}
+setup let admin = createUser(role: "admin").body  // a value the tests use
+teardown log("all done")                          // custom cleanup
+```
+
+- The `setup` items of a file run in order, once, before the file's first case that runs (not
+  at all if none of its tests run). Cases of earlier files that are still running (`parallel`)
+  finish first, so their fixtures can't clash with this one. They run outside any test: `ctx` and the hooks of
+  modifiers aren't there, and requests don't keep cookies.
+- Setup runs in an undo scope of its own that stays open until after the file's last case.
+  Undo actions registered during setup (request `undo`s, `undo(|| …)`, `write_file(…, undo:
+  true)`) run then. A `teardown` is registered on the same scope where it stands, so cleanup
+  runs in reverse order of declaration: in the example, the log comes first, then the marker
+  is removed, then `mail_off()`'s undos run.
+- A failing teardown or undo is reported as dirty, like a failed undo in a test (§8.3).
+- If setup fails, it's reported as a failure, the cleanup registered so far runs, and the
+  file's tests are reported as skipped.
+- `setup let name = expr` declares a top-level variable that setup sets. It can't be used where
+  the setup didn't run (`klausur run`, or the tests of another file). Its value must be data
+  (numbers, strings, arrays, maps): parallel cases run in workers (§7.4) and get a copy.
+- A run that stops early (`--fail-fast`, a dirty case, Ctrl-C) still runs the teardown of
+  every file whose setup ran.
+- `setup` and `teardown` only make sense next to tests: a file with them but no tests is a load
+  error.
+- The report shows `· setup` and `· teardown` lines with their durations.
 
 ### 8.3 When an undo action fails
 
@@ -804,7 +843,7 @@ inspect responses and drive recovery.
 
 Implemented:
 - Parser with span-based diagnostics, error recovery and suggestions.
-- Top-level `let` (lazy) / `fn` / `@request` / `test` / `import`.
+- Top-level `let` (lazy) / `fn` / `@request` / `test` / `import` / `setup` / `teardown`.
 - Named and positional arguments and defaults for requests and functions.
 - HTTP requests:
   - `connection`, `send` (JSON, fenced raw, `= expr`), `expect`, `let`, `undo` (all three

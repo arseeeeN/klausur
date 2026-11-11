@@ -7,6 +7,7 @@
 // - `@name(params) modifiers { sections }` requests, with line-based `connection` blocks,
 //   JSON `send` bodies with `{{…}}` interpolation, ``` fenced bodies and `undo`
 // - `test "name" (params) cases … modifiers { … }`
+// - `setup <expr>`, `setup let x = …` and `teardown <expr>` at the top level
 // - `expect` / `assert`, `x is string`, `null`, named arguments `f(a: 1)` and parameter defaults
 
 const rhai = require("./rhai/grammar");
@@ -20,7 +21,11 @@ module.exports = grammar(rhai, {
 
   rules: {
     // The root keeps Rhai's name: tree-sitter starts at the base grammar's first rule.
-    Rhai: ($) => repeat(choice($.Request, $.Test, $.Stmt)),
+    Rhai: ($) => repeat(choice($.Request, $.Test, $.Setup, $.Stmt)),
+
+    // `setup mail_off()`, `setup { … }`, `setup let admin = …`, `teardown restore()`
+    // (`let` is an expression in Rhai's grammar.)
+    Setup: ($) => seq(field("keyword", choice("setup", "teardown")), field("body", $.Expr)),
 
     // --- Requests ------------------------------------------------------------------------
 

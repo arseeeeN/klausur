@@ -18,7 +18,7 @@ const FUTURE_VERBS: &[(&str, &str)] = &[
     ("WT", "WebTransport"),
 ];
 const SECTIONS: &[&str] = &["connection", "send", "expect", "let", "undo"];
-const TOP_LEVEL: &[&str] = &["let", "const", "fn", "test", "import"];
+const TOP_LEVEL: &[&str] = &["let", "const", "fn", "test", "import", "setup", "teardown"];
 
 pub fn parse_file(file: FileId, src: &str) -> (File, Vec<Diag>) {
     let mut p = Parser { src, file, pos: 0 };
@@ -184,6 +184,7 @@ impl<'a> Parser<'a> {
             Some("fn") => self.fn_decl().map(Item::Fn),
             Some("test") => self.test_decl().map(Item::Test),
             Some("import") => self.import_decl().map(Item::Import),
+            Some("setup" | "teardown") => self.setup_decl().map(Item::Setup),
             other => {
                 let mut d = self.error_here("expected a top-level item");
                 if let Some(Some(s)) = other.map(|w| suggest(w, TOP_LEVEL.iter().copied())) {
@@ -193,7 +194,7 @@ impl<'a> Parser<'a> {
                 {
                     d = d.help("comments are written with `//` or `/* */`, and requests start with `@name { … }`");
                 } else {
-                    d = d.help("top-level items are `let`, `fn`, `@request`, `test` and `import`");
+                    d = d.help("top-level items are `let`, `fn`, `@request`, `test`, `import`, `setup` and `teardown`");
                 }
                 Err(d)
             }
@@ -333,6 +334,34 @@ impl<'a> Parser<'a> {
             params,
             body,
         })
+    }
+
+    /// `setup <expr>`, `setup { … }`, `setup let x = <expr>`, `teardown <expr>`, `teardown { … }`
+    fn setup_decl(&mut self) -> PResult<SetupDecl> {
+        let (keyword, span) = self.ident("`setup`")?;
+        self.trivia()?;
+        let kind = if keyword == "setup" && matches!(self.word(), Some("let" | "const")) {
+            SetupKind::Let(self.let_decl()?)
+        } else if keyword == "setup" {
+            SetupKind::Run(self.code()?)
+        } else {
+            SetupKind::Teardown(self.code()?)
+        };
+        Ok(SetupDecl { span, kind })
+    }
+
+    /// An expression up to the end of the statement, or a `{ … }` block.
+    fn code(&mut self) -> PResult<Code> {
+        if self.peek() == Some(b'{') {
+            let close = self.scan(scan::match_close(self.src, self.pos))?;
+            let span = self.span(self.pos, close + 1);
+            self.pos = close + 1;
+            self.after_statement()?;
+            return Ok(Code { span, block: true });
+        }
+        let span = self.expr("an expression or a `{ … }` block")?;
+        self.after_statement()?;
+        Ok(Code { span, block: false })
     }
 
     fn import_decl(&mut self) -> PResult<ImportDecl> {

@@ -485,6 +485,25 @@ impl<'a> Reporter<'a> {
         });
     }
 
+    /// A file's `setup` or `teardown`: one quiet line when it went well, otherwise reported
+    /// like a case.
+    pub fn fixture(&mut self, file: &str, result: CaseResult) {
+        if result.outcome.is_err() || !result.dirty.is_empty() {
+            return self.case(file, result);
+        }
+        self.file(file);
+        println!(
+            "  {} {}",
+            dim(format!("· {}", result.test)),
+            dim(format!("({})", humantime(result.duration)))
+        );
+        if self.verbose {
+            for line in &result.logs {
+                println!("      {}", dim(line));
+            }
+        }
+    }
+
     /// A test that couldn't even produce cases (modifier or parameter errors).
     pub fn test_error(&mut self, file: &str, name: &str, failure: Failure) {
         self.case(file, CaseResult::error(name.to_string(), failure));

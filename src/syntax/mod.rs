@@ -22,6 +22,7 @@ pub enum Item {
     Request(Box<RequestDecl>),
     Test(TestDecl),
     Import(ImportDecl),
+    Setup(SetupDecl),
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +123,31 @@ pub struct TestParam {
     pub span: Span,
     /// `name in <source>`; `None` means the value comes from `cases`.
     pub source: Option<Span>,
+}
+
+/// `setup …`, `setup let x = …` or `teardown …`: runs once for the tests of its file.
+#[derive(Debug, Clone)]
+pub struct SetupDecl {
+    /// The keyword, for messages.
+    pub span: Span,
+    pub kind: SetupKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum SetupKind {
+    /// `setup <expr>` or `setup { … }`
+    Run(Code),
+    /// `setup let x = <expr>`
+    Let(LetDecl),
+    /// `teardown <expr>` or `teardown { … }`
+    Teardown(Code),
+}
+
+/// An expression, or a block including its braces.
+#[derive(Debug, Clone, Copy)]
+pub struct Code {
+    pub span: Span,
+    pub block: bool,
 }
 
 #[derive(Debug, Clone)]

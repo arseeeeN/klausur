@@ -19,7 +19,7 @@
 [ "try" "catch" "throw" ] @keyword.exception
 "in" @keyword.operator
 
-[ "test" "cases" ] @keyword
+[ "test" "cases" "setup" "teardown" ] @keyword
 [ "connection" "send" "undo" ] @keyword
 [ "expect" "assert" ] @keyword
 

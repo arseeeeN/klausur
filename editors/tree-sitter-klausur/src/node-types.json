@@ -1339,6 +1339,10 @@
           "named": true
         },
         {
+          "type": "Setup",
+          "named": true
+        },
+        {
           "type": "Stmt",
           "named": true
         },
@@ -1411,6 +1415,36 @@
           {
             "type": "Fenced",
             "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "Setup",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "Expr",
+            "named": true
+          }
+        ]
+      },
+      "keyword": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "setup",
+            "named": false
+          },
+          {
+            "type": "teardown",
+            "named": false
           }
         ]
       }
@@ -1972,7 +2006,15 @@
     "named": false
   },
   {
+    "type": "setup",
+    "named": false
+  },
+  {
     "type": "switch",
+    "named": false
+  },
+  {
+    "type": "teardown",
     "named": false
   },
   {

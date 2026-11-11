@@ -37,6 +37,8 @@ pub struct GlobalVar {
     pub span: Span,
     pub value: Option<Dynamic>,
     pub evaluating: bool,
+    /// `setup let`: the file whose setup sets the value; it's never evaluated on use.
+    pub setup: Option<FileId>,
 }
 
 #[derive(Clone)]
