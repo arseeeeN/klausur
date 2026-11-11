@@ -394,8 +394,26 @@ fn register_types(engine: &mut Engine, shared: &Rc<Shared>) {
 
 fn read(shared: &Shared, path: &str) -> R<String> {
     let full = shared.resolve_path(path);
-    std::fs::read_to_string(&full)
-        .map_err(|e| Failure::new(format!("can't read {}: {e}", full.display())).into_err())
+    std::fs::read_to_string(&full).map_err(|e| {
+        let message = if e.kind() == std::io::ErrorKind::InvalidData {
+            format!(
+                "{} isn't UTF-8 text; `read_blob(path)` reads it as bytes",
+                full.display()
+            )
+        } else {
+            format!("can't read {}: {e}", full.display())
+        };
+        Failure::new(message).into_err()
+    })
+}
+
+/// A text file for parsing: without the byte order mark some Windows editors write.
+fn read_data(shared: &Shared, path: &str) -> R<String> {
+    let text = read(shared, path)?;
+    Ok(match text.strip_prefix('\u{feff}') {
+        Some(rest) => rest.to_string(),
+        None => text,
+    })
 }
 
 fn register_functions(engine: &mut Engine, shared: &Rc<Shared>) {
@@ -425,14 +443,14 @@ fn register_functions(engine: &mut Engine, shared: &Rc<Shared>) {
     engine.register_fn("read_file", move |path: &str| read(&s, path));
     let s = shared.clone();
     engine.register_fn("json", move |path: &str| -> R<Dynamic> {
-        let text = read(&s, path)?;
+        let text = read_data(&s, path)?;
         let json: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| Failure::new(format!("{path} isn't valid JSON: {e}")).into_err())?;
         Ok(value::from_json(&json))
     });
     let s = shared.clone();
     engine.register_fn("csv", move |path: &str| -> R<Array> {
-        let text = read(&s, path)?;
+        let text = read_data(&s, path)?;
         let mut reader = csv::Reader::from_reader(text.as_bytes());
         let headers = reader
             .headers()

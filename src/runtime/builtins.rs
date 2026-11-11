@@ -411,6 +411,13 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
             }
             let full = s.resolve_path(&path.to_string());
             let before = std::fs::read(&full).ok();
+            // The directories this creates, innermost first, for the undo to remove again.
+            let created: Vec<std::path::PathBuf> = full
+                .ancestors()
+                .skip(1)
+                .take_while(|d| !d.as_os_str().is_empty() && !d.exists())
+                .map(|d| d.to_path_buf())
+                .collect();
             if let Some(dir) = full.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| {
                     Failure::new(format!("can't create {}: {e}", dir.display())).into_err()
@@ -434,7 +441,14 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
                             r => r,
                         },
                     };
-                    result.map_err(|e| format!("can't restore {}: {e}", target.display()))
+                    result.map_err(|e| format!("can't restore {}: {e}", target.display()))?;
+                    // Directories made for the file go too, unless something else is in them now.
+                    for dir in &created {
+                        if std::fs::remove_dir(dir).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(())
                 });
                 let span = ncx
                     .call_source()
@@ -461,8 +475,14 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
         FileWatch { path, start }
     });
     engine.register_fn("text", |w: &mut FileWatch| w.appended());
+    // Only complete lines: a writer in the middle of a line isn't done with it.
     engine.register_fn("lines", |w: &mut FileWatch| -> R<Array> {
-        Ok(w.appended()?
+        let text = w.appended()?;
+        let complete = match text.rfind('\n') {
+            Some(i) => &text[..=i],
+            None => "",
+        };
+        Ok(complete
             .lines()
             .filter(|l| !l.trim().is_empty())
             .map(|l| Dynamic::from(l.to_string()))

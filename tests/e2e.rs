@@ -2214,3 +2214,56 @@ test "nested" { expect `a${ `b${m.default}` }c` == "ab1c" }
     assert_eq!(out.code, 0, "{}", out.all());
     assert!(out.stdout.contains("3 passed"), "{}", out.all());
 }
+
+#[test]
+fn file_handling_edge_cases() {
+    let server = start();
+    let p = project(
+        "files",
+        r#"
+fn bytes(list, text = "") {
+    let b = blob()
+    for x in list { b.push(x) }
+    b + text.to_blob()
+}
+test "json and csv ignore a byte order mark" {
+    write_file("bom.json", bytes([0xef, 0xbb, 0xbf], `{"a": 1}`))
+    write_file("bom.csv", bytes([0xef, 0xbb, 0xbf], "name,n\nx,1\n"))
+    expect json("bom.json").a == 1 && csv("bom.csv")[0].name == "x"
+}
+test "read_file keeps line endings" {
+    write_file("crlf.txt", "a\r\nb\r\n")
+    expect read_file("crlf.txt") == "a\r\nb\r\n"
+}
+test "read_file on binary data names read_blob" {
+    write_file("bin.dat", bytes([0xff, 0xfe]))
+    expect read_blob("bin.dat").len() == 2
+    read_file("bin.dat")
+}
+test "an undone write removes the directories it made" rollback {
+    write_file("made/by/write/x.txt", "x", undo: true)
+}
+test "but not those that were there" rollback {
+    write_file("kept/x.txt", "x")
+    write_file("kept/new/y.txt", "y", undo: true)
+}
+test "after the undos" {
+    expect !file_exists("made") && file_exists("kept/x.txt") && !file_exists("kept/new")
+}
+test "watched lines are complete lines" {
+    let w = watch_file("app.log")
+    write_file("app.log", "first\nhalf a li")
+    expect w.lines() == ["first"] && w.text() == "first\nhalf a li"
+}
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    assert!(out.stdout.contains("6 passed, 1 failed"), "{}", out.all());
+    assert!(
+        out.stdout
+            .contains("isn't UTF-8 text; `read_blob(path)` reads it as bytes"),
+        "{}",
+        out.all()
+    );
+}

@@ -304,7 +304,7 @@ fn onboard(name) {
 |---|---|
 | `env(name)`, `env(name, default)` | Environment variable (§9); fails if unset and no default |
 | `raw(x)` | Insert verbatim into templates (§4.3) |
-| `json(path)`, `csv(path)`, `read_file(path)` | Read files relative to the current file. CSV rows become maps, with numbers and booleans converted |
+| `json(path)`, `csv(path)`, `read_file(path)` | Read files relative to the current file. CSV rows become maps, with numbers and booleans converted. `json` and `csv` skip a UTF-8 byte order mark; `read_file` returns the text exactly (line endings included) and must be UTF-8 |
 | `scoped(\|\| …)`, `transaction(\|\| …)` | Undo scopes (§8.2) |
 | `ctx()` | The running case's context (§7.1). Lets hooks hand values to the test body |
 | `log(x)`, `print(x)` | Add to the case log, shown on failure or with `-v`. Maps and arrays are shown as JSON, here and in `${…}` |
@@ -315,8 +315,8 @@ fn onboard(name) {
 | `gen::…` | Generators (§6.2) |
 | `file(path)`, `file_from(name, content[, type])`, `read_blob(path)` | Files to upload; the content type is guessed from the name |
 | `write_file(path, content)`, `remove_file(path)`, `file_exists(path)` | `content` is a string or a blob, and missing folders are created. `write_file` returns the absolute path. `remove_file` returns whether the file existed |
-| `write_file(path, content, undo: true)` | Also registers an undo that puts back what was there: the earlier content, or no file |
-| `watch_file(path)` | Remembers how long a file is; `.lines()` and `.text()` return what was appended since (from the start if the file was rotated). For "no new errors in the service's log" |
+| `write_file(path, content, undo: true)` | Also registers an undo that puts back what was there: the earlier content, or no file (and none of the directories it created) |
+| `watch_file(path)` | Remembers how long a file is; `.text()` returns what was appended since (from the start if the file was rotated), `.lines()` its complete, non-empty lines (not a line still being written). For "no new errors in the service's log" |
 | `now()`, `now(format)`, `today()` | Local time: ISO 8601 with the offset, a strftime pattern (`"%d.%m.%Y"`), or `2026-11-05` |
 | `undo(\|\| …)`, `undo(label, \|\| …)` | Register a cleanup that isn't tied to a request (§8.1) |
 | `multipart(#{ … })` | A `multipart/form-data` body (§4.3) |
