@@ -705,7 +705,7 @@ impl Compiler<'_> {
         s: usize,
         e: usize,
     ) -> Option<PollRt> {
-        const ARGS: [&str; 5] = ["until", "while", "every", "within", "for"];
+        const ARGS: [&str; 6] = ["until", "while", "every", "within", "for", "stable_for"];
         let parts = match split_top_level(src, s, e) {
             Ok(p) => p,
             Err(err) => {
@@ -714,8 +714,8 @@ impl Compiler<'_> {
                 return None;
             }
         };
-        let mut units: [Option<usize>; 5] = [None; 5];
-        let mut spans: [Option<Span>; 5] = [None; 5];
+        let mut units: [Option<usize>; 6] = [None; 6];
+        let mut spans: [Option<Span>; 6] = [None; 6];
         let mut ok = true;
         for (ps, pe) in parts {
             let (ps, pe) = crate::syntax::scan::trim_range(src, ps, pe);
@@ -738,7 +738,7 @@ impl Compiler<'_> {
             };
             let Some(i) = ARGS.iter().position(|a| *a == arg) else {
                 let mut d = Diag::at(arg_span, format!("`poll` has no argument `{arg}`")).help(
-                    "`poll` takes `until`, `every` and `within`, or `while`, `every` and `for`",
+                    "`poll` takes `until`, `every`, `within` and `stable_for`, or `while`, `every` and `for`",
                 );
                 if let Some(s) = suggest(arg, ARGS) {
                     d = d.help(format!("did you mean `{s}`?"));
@@ -764,7 +764,7 @@ impl Compiler<'_> {
             spans[i] = Some(arg_span);
             ok &= units[i].is_some();
         }
-        let [until, while_, every, within, for_] = units;
+        let [until, while_, every, within, for_, stable] = units;
         let (mode, cond, limit) = match (until, while_) {
             (Some(_), Some(_)) => {
                 self.diags.push(
@@ -796,6 +796,14 @@ impl Compiler<'_> {
                 (PollMode::Until, cond, within)
             }
             (None, Some(cond)) => {
+                if let Some(span) = spans[5] {
+                    self.diags.push(
+                        Diag::at(span, "`stable_for` goes with `until`").help(
+                            "`poll(while: …, for: \"10s\")` already checks for the whole time",
+                        ),
+                    );
+                    return None;
+                }
                 if let Some(span) = spans[3] {
                     self.diags.push(
                         Diag::at(span, "`within` goes with `until`; `while` has `for`").help(
@@ -824,6 +832,7 @@ impl Compiler<'_> {
             mode,
             every,
             limit,
+            stable,
             span: m,
         })
     }

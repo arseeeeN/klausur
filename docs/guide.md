@@ -86,7 +86,9 @@ let base = env("API_URL", "http://localhost:8080")
   write `{{base}}/nodes{{url_path(node)}}`: each segment encoded, the slashes kept.
 - **Slow endpoints get a timeout**, so a hang fails fast: `@chat(q) timeout("90s") { … }`.
 - **Background work is waited for with `poll`**, never with `sleep`:
-  `@job(id) poll(until: body.state == "done", every: "500ms", within: "30s") { … }`.
+  `@job(id) poll(until: body.state == "done", every: "500ms", within: "30s") { … }`. If the
+  service settles in a burst, add `stable_for: "1s"`: the condition must then hold for a second
+  without a break.
 
 `klausur run api.kl#createUser -a name=alice` sends one request, which is the fastest way to
 check a block while writing it.

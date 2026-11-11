@@ -2504,3 +2504,41 @@ test "watched lines are complete lines" {
         out.all()
     );
 }
+
+#[test]
+fn poll_until_stable() {
+    let server = start();
+    let p = project(
+        "poll-stable",
+        r#"
+@once(key) poll(until: status == 200, every: "50ms", within: "5s") {
+    connection { GET {{base}}/flicker/{{key}} }
+}
+@settled(key) poll(until: status == 200, every: "50ms", within: "5s", stable_for: "200ms") {
+    connection { GET {{base}}/flicker/{{key}} }
+}
+@neverSettles(key) poll(until: status == 200, every: "50ms", within: "600ms", stable_for: "200ms") {
+    connection { GET {{base}}/flicker/{{key}}?alternate=1 }
+}
+test "until stops at the first success" { expect once("a").body.n == 2 }
+// 503, 200, 503: the first success doesn't count; then 200 from the 4th on, for 200 ms.
+test "stable_for waits until it has held long enough" { expect settled("b").body.n >= 8 }
+test "it fails when it never holds long enough" { neverSettles("c") }
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    assert!(out.stdout.contains("2 passed, 1 failed"), "{}", out.all());
+    let words: Vec<&str> = out
+        .stdout
+        .split_whitespace()
+        .filter(|w| *w != "|")
+        .collect();
+    assert!(
+        words
+            .join(" ")
+            .contains("and `until` held, but never for 200 ms in a row"),
+        "{}",
+        out.all()
+    );
+}

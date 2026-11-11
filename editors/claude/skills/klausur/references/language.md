@@ -115,6 +115,9 @@ errors, 429, 5xx) are retried 3 times.
 - `poll(until: body.state == "done", every: "1s", within: "60s")`: repeat until the condition
   holds (`until` sees the response like `expect`; can be a closure `|r| r.status == 200`). No
   response counts as "not yet". `expect`/`let`/`undo` run on the final response.
+- `poll(until: status == 200, every: "250ms", within: "20s", stable_for: "1s")` (0.5.1+): keep
+  polling until the condition has held for 1 s without a break, for a service that settles in a
+  burst (reloading its config several times for one change). Instead of `poll` + `sleep` + `poll`.
 - `poll(while: body.total == 0, every: "1s", for: "15s")`: check something *keeps* holding for
   the whole time; fails on the first response where it doesn't.
 

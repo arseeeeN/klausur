@@ -81,6 +81,8 @@ pub struct PollRt {
     pub every: Option<usize>,
     /// `within` for `until`, `for` for `while`.
     pub limit: Option<usize>,
+    /// `stable_for` (with `until`): how long the condition must keep holding.
+    pub stable: Option<usize>,
     pub span: Span,
 }
 
@@ -223,9 +225,16 @@ fn poll_until(
     };
     let every = duration(poll.every, POLL_EVERY)?;
     let within = duration(poll.limit, POLL_WITHIN)?;
+    let stable = match poll.stable {
+        Some(unit) => Some(duration(Some(unit), Duration::ZERO)?),
+        None => None,
+    };
     let started = Instant::now();
     let mut attempts = 0;
     let mut any_timed_out = false;
+    // `stable_for`: when the condition started to hold without a break, and the longest it did.
+    let mut holding_since: Option<Instant> = None;
+    let mut longest = Duration::ZERO;
     loop {
         attempts += 1;
         let mut s = base.clone();
@@ -234,24 +243,51 @@ fn poll_until(
             Ok((result, exchange)) => {
                 let held = cond_holds(shared, engine, poll, &mut s, &result)
                     .map_err(|e| with_exchange(shared, e, &exchange))?;
-                if held {
+                let settled = match (held, stable) {
+                    (false, _) => false,
+                    (true, None) => true,
+                    (true, Some(stable)) => {
+                        let since = *holding_since.get_or_insert_with(Instant::now);
+                        longest = longest.max(since.elapsed());
+                        since.elapsed() >= stable
+                    }
+                };
+                if settled {
                     *scope = s;
                     return Ok((result, exchange));
+                }
+                if !held {
+                    holding_since = None;
                 }
                 Err(exchange)
             }
             Err(e) if shared.state.borrow().last_http_failed => {
                 any_timed_out |= shared.state.borrow().last_http_timed_out;
+                holding_since = None;
                 Ok(e)
             }
             Err(e) => return Err(e),
         };
         let elapsed = started.elapsed();
         let gave_up = if elapsed + every > within {
+            let times = if attempts == 1 { "time" } else { "times" };
+            let what = match stable {
+                Some(stable) if longest > Duration::ZERO || holding_since.is_some() => {
+                    let at_most = if longest > Duration::ZERO {
+                        format!(" (at most {})", crate::testing::humantime(longest))
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "and `until` held, but never for {} in a row{at_most}",
+                        crate::testing::humantime(stable)
+                    )
+                }
+                _ => "but `until` never held".to_string(),
+            };
             Some(format!(
-                "`{}` polled {attempts} {} over {}, but `until` never held",
+                "`{}` polled {attempts} {times} over {}, {what}",
                 req.name,
-                if attempts == 1 { "time" } else { "times" },
                 crate::testing::humantime(elapsed)
             ))
         } else {

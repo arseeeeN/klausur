@@ -533,9 +533,14 @@ short by a test's `timeout`.
   (default `"60s"`), and a test's `timeout` still cuts it short.
 - An attempt that gets no response (connection refused, `timeout` hit) counts as "not yet",
   so `poll` also waits for a service to come up.
-- `expect`, `let` and `undo` run once, on the response that satisfied `until`.
+- `stable_for: "1s"` waits until the condition has held for that long without a break: polling
+  goes on after the first success, and any attempt where it doesn't hold starts over. For a
+  service that settles in a burst, e.g. one that reloads its configuration several times for
+  one change.
+- `expect`, `let` and `undo` run once, on the response that satisfied `until` (with
+  `stable_for`, the last one).
 - When `within` runs out, the call fails with the number of attempts and the last response,
-  or the last error.
+  or the last error; with `stable_for`, also whether the condition held at all.
 
 `poll(while: …, for: …)` checks the opposite: that something keeps holding, for instance that
 a file the service should ignore never gets indexed.
@@ -548,7 +553,7 @@ a file the service should ignore never gets indexed.
 
 - The request repeats for the whole of `for`, and the call fails on the first response
   where `while` doesn't hold, showing that response.
-- `for` is required. `within` goes with `until` and `for` with `while`.
+- `for` is required. `within` and `stable_for` go with `until`, `for` with `while`.
 - Unlike `until`, an attempt that gets no response fails the call: it proves nothing about the
   condition.
 - `expect`, `let` and `undo` run once, on the last response.

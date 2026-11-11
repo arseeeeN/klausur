@@ -168,6 +168,18 @@ fn handle(state: &Mutex<State>, req: &tiny_http::Request, body: &str) -> (u16, O
                 ),
             )
         }
+        // Up, down once, then up for good: 503, 200, 503, 200, 200, … With `?alternate=1`, up and
+        // down forever.
+        ("GET", ["flicker", key]) => {
+            let n = s.flaky.entry(format!("flicker-{key}")).or_insert(0);
+            *n += 1;
+            let up = if query.contains_key("alternate") {
+                (*n).is_multiple_of(2)
+            } else {
+                *n != 1 && *n != 3
+            };
+            (if up { 200 } else { 503 }, Some(json!({"n": *n})))
+        }
         // A job that is done on the `after`-th poll.
         ("GET", ["jobs", key]) => {
             let n = s.flaky.entry(format!("job-{key}")).or_insert(0);
