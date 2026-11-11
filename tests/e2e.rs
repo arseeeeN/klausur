@@ -2196,3 +2196,21 @@ test "without the modifier, nothing is kept" {
     assert_eq!(out.code, 0, "{}", out.all());
     assert!(out.stdout.contains("7 passed"), "{}", out.all());
 }
+
+#[test]
+fn template_strings_are_rewritten() {
+    let server = start();
+    let p = project(
+        "template-strings",
+        r#"
+let m = #{ default: 1 }
+fn greet(name, greeting = "hi") { `${greeting} ${name}` }
+test "reserved keys" { expect `${m.default}` == "1" }
+test "named arguments" { expect `<${greet(name: "a", greeting: "yo")}>` == "<yo a>" }
+test "nested" { expect `a${ `b${m.default}` }c` == "ab1c" }
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("3 passed"), "{}", out.all());
+}

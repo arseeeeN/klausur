@@ -145,7 +145,28 @@ impl Rewriter<'_> {
                     pos = self.scan(skip_trivia(self.src, pos))?.min(end);
                     continue;
                 }
-                b'"' | b'`' | b'\'' => {
+                b'`' => {
+                    // `${…}` in a template string is code: rewrite it like any other.
+                    let close = self.scan(scan::skip_string(self.src, pos))? - 1;
+                    let mut i = pos + 1;
+                    while i < close {
+                        match bytes[i] {
+                            b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                                let inner_end = self.scan(scan::match_close(self.src, i + 1))?;
+                                out.push_orig(self.file, copied, &self.src[copied..i + 2]);
+                                self.rewrite_in(i + 2, inner_end, out, Kind::Paren)?;
+                                copied = inner_end;
+                                i = inner_end + 1;
+                            }
+                            _ => i += 1,
+                        }
+                    }
+                    pos = close + 1;
+                    last = Some(b'"');
+                    last_end = pos;
+                    continue;
+                }
+                b'"' | b'\'' => {
                     pos = self.scan(scan::skip_string(self.src, pos))?;
                     last = Some(b'"');
                     last_end = pos;
