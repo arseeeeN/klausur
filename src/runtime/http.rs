@@ -40,7 +40,15 @@ pub fn agent() -> ureq::Agent {
         .max_redirects_will_error(false)
         .user_agent(concat!("klausur/", env!("CARGO_PKG_VERSION")))
         .build();
-    ureq::Agent::new_with_config(config)
+    // Every connection gets the early-response check (see `early`).
+    use ureq::unversioned::transport::Connector;
+    let connector = ureq::unversioned::transport::DefaultConnector::new()
+        .chain(super::early::EarlyResponseConnector);
+    ureq::Agent::with_parts(
+        config,
+        connector,
+        ureq::unversioned::resolver::DefaultResolver::default(),
+    )
 }
 
 pub fn send(agent: &ureq::Agent, req: &Prepared, timeout: Duration) -> Result<Received, HttpError> {

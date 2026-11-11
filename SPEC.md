@@ -231,7 +231,9 @@ A call runs the request and returns a **result** with these fields:
 - `request`: the method, URL, headers and body that were sent
 - every capture as a field (`u.id`)
 
-Redirects are not followed, so a `302` is reported as a `302`. The default request timeout
+Redirects are not followed, so a `302` is reported as a `302`. A response that arrives before
+the body is completely sent (a `413` for a too large upload) is reported as that response, like
+curl does; the rest of the body isn't sent. The default request timeout
 is 30 s; change it with `--timeout`, or per request with the `timeout` modifier (§7.3).
 
 If `expect` fails, the call raises an error, which fails the enclosing test or

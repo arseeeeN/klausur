@@ -2008,3 +2008,55 @@ test "built in" { expect regex_match(unique("alice"), "^alice-[0-9a-f]{8}$") && 
         assert!(out.stdout.contains("1 passed"), "{}", out.all());
     }
 }
+
+/// A server like Tomcat refusing a too large upload: it answers 413 after reading only the start
+/// of the body, then closes the connection.
+fn refusing_server() -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 16 * 1024];
+            // The headers and about 64 KB of the body, then the answer.
+            while seen.len() < 64 * 1024 {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => seen.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = stream.write_all(
+                b"HTTP/1.1 413 Payload Too Large\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: close\r\n\r\nfile too big\n",
+            );
+            let _ = stream.flush();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
+    base
+}
+
+#[test]
+fn early_responses_to_large_uploads() {
+    let server = start();
+    let refusing = refusing_server();
+    let p = project(
+        "early",
+        &format!(
+            r#"
+@upload() {{
+    connection {{ POST {refusing}/upload }}
+    send = blob(20000000, 65)
+}}
+test "a refused upload reports the server's answer" {{
+    let r = upload()
+    expect r.status == 413
+    expect r.body.contains("too big")
+}}
+"#
+        ),
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+}

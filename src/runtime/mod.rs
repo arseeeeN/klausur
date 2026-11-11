@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod builtins;
+pub mod early;
 pub mod engine;
 pub mod explain;
 pub mod http;
