@@ -17,6 +17,9 @@ pub struct UndoAction {
     /// Parameters, captures and response values of the original request.
     pub env: Vec<(String, Dynamic)>,
     pub span: Span,
+    /// The directory relative paths resolved against where the action was registered; it runs
+    /// with the same, so `undo(|| remove_file("out/a.txt"))` removes the file `write_file` wrote.
+    pub dir: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +108,7 @@ pub fn register_script(
     if shared.flags.unwinding.get() > 0 {
         return false;
     }
+    let shared_dir = shared.cur_dir.borrow().clone();
     let mut state = shared.state.borrow_mut();
     let Some(top) = state.scopes.last_mut() else {
         state.skipped_undos.push(label);
@@ -117,6 +121,7 @@ pub fn register_script(
         kind: UndoRt::Script(f, unit),
         env: Vec::new(),
         span: span.unwrap_or(Span::new(0, 0, 0)),
+        dir: shared_dir,
     });
     true
 }
@@ -132,6 +137,7 @@ pub fn register_native(
     if shared.flags.unwinding.get() > 0 {
         return false;
     }
+    let shared_dir = shared.cur_dir.borrow().clone();
     let mut state = shared.state.borrow_mut();
     let Some(top) = state.scopes.last_mut() else {
         state.skipped_undos.push(label);
@@ -144,6 +150,7 @@ pub fn register_native(
         kind: UndoRt::Native(f),
         env: Vec::new(),
         span: span.unwrap_or(Span::new(0, 0, 0)),
+        dir: shared_dir,
     });
     true
 }
@@ -179,6 +186,14 @@ fn run_with_retries(
     engine: &Engine,
     action: &UndoAction,
 ) -> Result<(), Attempts> {
+    // Relative paths resolve as they did where the action was registered.
+    let previous = shared.cur_dir.replace(action.dir.clone());
+    let result = retry(shared, engine, action);
+    shared.cur_dir.replace(previous);
+    result
+}
+
+fn retry(shared: &Rc<Shared>, engine: &Engine, action: &UndoAction) -> Result<(), Attempts> {
     let mut attempts = Vec::new();
     let mut last_exchange = None;
     let max = shared.config.undo_attempts.max(1);

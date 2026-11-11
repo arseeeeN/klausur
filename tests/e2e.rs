@@ -2060,3 +2060,28 @@ test "a refused upload reports the server's answer" {{
     let out = p.run(&server, &["test"]);
     assert_eq!(out.code, 0, "{}", out.all());
 }
+
+#[test]
+fn undo_paths_resolve_where_registered() {
+    let server = start();
+    let p = project(
+        "undo-paths",
+        r#"
+fn fixture_file() {
+    this.before(|ctx| {
+        write_file("out/hook.txt", "x")
+        undo("remove the hook file", || remove_file("out/hook.txt"))
+    })
+}
+test "undo from a hook" rollback fixture_file() { expect file_exists("out/hook.txt") }
+test "undo from the body" rollback {
+    write_file("out/body.txt", "x")
+    undo("remove the body file", || remove_file("out/body.txt"))
+}
+test "the files are gone" { expect !file_exists("out/hook.txt") && !file_exists("out/body.txt") }
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("3 passed"), "{}", out.all());
+}

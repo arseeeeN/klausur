@@ -946,6 +946,7 @@ fn register_undo(
         kind: undo.clone(),
         env,
         span,
+        dir: shared.cur_dir.borrow().clone(),
     });
     true
 }

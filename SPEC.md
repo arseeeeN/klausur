@@ -601,6 +601,9 @@ The closure goes onto the same stack as request undos, so it runs with `rollback
 `transaction`, and a failure shows up in the dirty report. `undo` returns whether it was
 registered: with no scope open, it isn't.
 
+Undo actions run with relative paths resolved as where they were registered, so
+`undo(|| remove_file("out/a.txt"))` removes the file `write_file("out/a.txt", …)` wrote.
+
 An undo action is **registered only after its request's `expect` passed**. At
 registration it captures the request's parameters and captures by value.
 
