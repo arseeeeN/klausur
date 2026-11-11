@@ -1,6 +1,6 @@
 {
   "name": "tree-sitter-klausur",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Tree-sitter grammar for klausur API test files (.kl)",
   "license": "MIT",
   "private": true,
