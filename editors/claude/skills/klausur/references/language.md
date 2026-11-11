@@ -261,6 +261,7 @@ Hooks: `this.before(|ctx| …)`, `this.after(|ctx, result| …)` (`result.passed
 klausur test [paths…] ["name filter"…] [--tag T] [--case k=v|label] [--seed N]
              [-j N] [-v] [--timeout SECS] [--env NAME] [--on-dirty=abort|continue] [--headed]
              [--fail-fast] [--junit FILE] [--watch]   # 0.4+: stop early; JUnit XML; rerun on change
+             [--skip-tag T]                           # 0.5+: leave out tests with a tag
 klausur run file.kl[#name] [-a k=v …] [-q] [--env NAME] [--headed]
 klausur list [paths…]
 klausur update                           # 0.4+: replace klausur with the latest release

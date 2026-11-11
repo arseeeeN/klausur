@@ -95,6 +95,9 @@ struct TestArgs {
     /// Only run tests with this tag.
     #[arg(long = "tag")]
     tags: Vec<String>,
+    /// Leave out tests with this tag, e.g. `--skip-tag ui` without a browser.
+    #[arg(long = "skip-tag", value_name = "TAG")]
+    skip_tags: Vec<String>,
     /// What to do after a test leaves the environment dirty.
     #[arg(long, value_enum, default_value_t = OnDirty::Abort)]
     on_dirty: OnDirty,
@@ -531,6 +534,9 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
             continue;
         }
         if !tags.is_empty() && !def.tags.iter().any(|t| tags.contains(t)) {
+            continue;
+        }
+        if def.tags.iter().any(|t| args.skip_tags.contains(t)) {
             continue;
         }
         if let Some(reason) = &def.skip {

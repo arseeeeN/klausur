@@ -2105,3 +2105,20 @@ test "reserved words as keys" {
     let out = p.run(&server, &["test"]);
     assert_eq!(out.code, 0, "{}", out.all());
 }
+
+#[test]
+fn skip_tag() {
+    let server = start();
+    let p = project(
+        "skip-tag",
+        r#"
+test "ui only" tags(["ui"]) { expect true }
+test "api" tags(["api"]) { expect true }
+test "untagged" { expect true }
+"#,
+    );
+    let out = p.run(&server, &["test", "--skip-tag", "ui"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("2 passed"), "{}", out.all());
+    assert!(!out.stdout.contains("ui only"), "{}", out.all());
+}

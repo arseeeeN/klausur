@@ -751,7 +751,7 @@ should grow beyond dotenv, e.g. with per-environment base URLs.)*
 ```
 klausur run  <file>[#name] [-a k=v ...] [--env NAME] [--timeout SECS] [-q] [--headed]
 klausur test [paths/filters] [--seed N] [--case k=v|label] [--tag T] [--on-dirty=abort|continue] [--env NAME] [--timeout SECS] [-j N] [-v] [--headed]
-             [--fail-fast] [--junit FILE] [--watch]
+             [--fail-fast] [--junit FILE] [--watch] [--skip-tag T]
 klausur list [paths]
 klausur update
 klausur init [DIR] [--auth basic|bearer]
@@ -770,9 +770,10 @@ klausur fmt  [paths]                           # post-v1
   recursively for `*.kl`), and every other argument as a test-name filter (substring). It
   defaults to the current directory. Only tests from the given files run; tests in
   imported files don't. `only` on any test narrows the run to the `only` tests.
-- **`test` options for CI and writing tests**: `--fail-fast` stops scheduling after the first
-  failure; `--junit FILE` also writes a JUnit XML report (one `<testsuite>` per file, failures
-  with the same text as the terminal, dirty cases as failures); `--watch` runs again whenever
+- **`test` options for CI and writing tests**: `--skip-tag T` leaves out tests with that tag
+  (the opposite of `--tag`); `--fail-fast` stops scheduling after the first failure;
+  `--junit FILE` also writes a JUnit XML report (one `<testsuite>` per file, failures with
+  the same text as the terminal, dirty cases as failures); `--watch` runs again whenever
   something in the test folders changes (not `klausur-results/`, hidden or editor swap files),
   until Ctrl-C.
 - **`list`** shows the requests (with signatures and protocol lines), functions and tests.
