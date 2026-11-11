@@ -495,6 +495,9 @@ impl<'a> Reporter<'a> {
             println!("\n{}", bold("Failures"));
             for r in &self.failures {
                 println!("\n{} {}", red("──"), bold(r.label()));
+                if let Some(full) = r.long_label() {
+                    println!("  {} {}", dim("label:"), dim(full));
+                }
                 if let Some(args) = r.args_line() {
                     println!("  {} {}", dim("args:"), dim(args));
                 }

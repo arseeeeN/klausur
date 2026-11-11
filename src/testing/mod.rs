@@ -294,19 +294,33 @@ impl CaseResult {
     }
 
     /// `test [label]`, or `test [a=1, b={…}]` without a `label` modifier.
+    /// The case's name in reports: the test, and its label or arguments in brackets, shortened
+    /// to [`LABEL_MAX`] characters.
     pub fn label(&self) -> String {
+        match self.case_part() {
+            Some(part) => format!("{} [{}]", self.test, shorten(&part, LABEL_MAX)),
+            None => self.test.clone(),
+        }
+    }
+
+    /// The full label, when [`label`](Self::label) had to shorten it.
+    pub fn long_label(&self) -> Option<String> {
+        self.case_part().filter(|p| p.chars().count() > LABEL_MAX)
+    }
+
+    fn case_part(&self) -> Option<String> {
         if let Some(label) = &self.label {
-            return format!("{} [{label}]", self.test);
+            return Some(label.clone());
         }
         if self.args.is_empty() {
-            return self.test.clone();
+            return None;
         }
         let args: Vec<String> = self
             .args
             .iter()
             .map(|(k, v)| format!("{k}={}", short_value(v)))
             .collect();
-        format!("{} [{}]", self.test, args.join(", "))
+        Some(args.join(", "))
     }
 
     /// The arguments in full, shown with failures when the label hides them.
@@ -787,6 +801,17 @@ pub fn run_case(
         logs,
         generated: spec.generated,
     }
+}
+
+/// How many characters of a case's label or arguments reports show on one line.
+pub const LABEL_MAX: usize = 80;
+
+fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 pub fn humantime(d: Duration) -> String {

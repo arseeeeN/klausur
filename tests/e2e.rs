@@ -2123,3 +2123,23 @@ test "untagged" { expect true }
     assert!(out.stdout.contains("2 passed"), "{}", out.all());
     assert!(!out.stdout.contains("ui only"), "{}", out.all());
 }
+
+#[test]
+fn long_labels_are_shortened() {
+    let server = start();
+    let long = "a".repeat(150);
+    let p = project(
+        "long-labels",
+        &format!(r#"test "long label" (x in ["{long}"]) label(x) {{ expect false }}"#),
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    // The list line is shortened; the failure section shows the whole label.
+    let short = format!("✗ long label [{}…]", "a".repeat(79));
+    assert!(out.stdout.contains(&short), "{}", out.all());
+    assert!(
+        out.stdout.contains(&format!("label: {long}")),
+        "{}",
+        out.all()
+    );
+}
