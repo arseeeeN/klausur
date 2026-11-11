@@ -228,8 +228,10 @@ Hooks: `this.before(|ctx| …)`, `this.after(|ctx, result| …)` (`result.passed
 - `rollback` (test modifier) = run the case inside `scoped`.
 - `scoped(|| …)`: undo everything registered inside when it ends, success or failure.
 - `transaction(|| …)`: undo on failure, keep (hand to the outer scope) on success.
-- `undo(|| …)` / `undo("label", || …)`: register cleanup for state no request created (a file
-  written into a watched folder, say). Returns whether a scope was open to take it. Relative
+- `undo(|| …)` / `undo("label", || …)`: register cleanup for state no request created. Returns
+  whether a scope was open to take it. **For files use `write_file(path, content, undo: true)`**,
+  not `undo(|| remove_file(path))`: it restores a file that existed and removes the directories
+  it created; the hand-written undo does neither. Relative
   paths in it resolve as where it was registered (0.5+; before 0.5 they resolved against the
   working directory, so pass the absolute path `write_file` returns).
 - Outside any scope (e.g. `klausur run`), undo actions aren't registered; klausur says so.

@@ -604,23 +604,26 @@ workers get the values of `setup let` as data (§8.7). With `-v`, the request tr
 - A full form with its own sections: `undo { connection {…} expect … }`.
 - A call: `undo deleteUser(id)`.
 
-Code that changes state without a request, such as writing a file into a folder a service
-watches, registers its cleanup with the `undo` function:
+Code that changes state without a request registers its cleanup with the `undo` function:
 
 ```
-fn drop_file(name, content) {
-    let path = write_file(`${uploads}/${name}`, content)
-    undo("remove the dropped file", || remove_file(path))
-    path
+fn maintenance_on() {
+    set_mode("maintenance")              // a helper that changes state some other way
+    undo("end maintenance", || set_mode("normal"))
 }
 ```
+
+For files, `write_file(path, content, undo: true)` is the better way: its undo puts back a file
+that was there before and removes the directories the write created. A hand-written
+`undo(|| remove_file(path))` does neither, so it can destroy an existing file and leaves empty
+directories behind.
 
 The closure goes onto the same stack as request undos, so it runs with `rollback`, `scoped` and
 `transaction`, and a failure shows up in the dirty report. `undo` returns whether it was
 registered: with no scope open, it isn't.
 
 Undo actions run with relative paths resolved as where they were registered, so
-`undo(|| remove_file("out/a.txt"))` removes the file `write_file("out/a.txt", …)` wrote.
+`undo(|| read_file("out/a.txt"))` reads the same file as `read_file("out/a.txt")` next to it.
 
 An undo action is **registered only after its request's `expect` passed**. At
 registration it captures the request's parameters and captures by value.
@@ -682,8 +685,8 @@ server has to pick up, a user with a role), can be made once for the file:
 ```
 setup mail_off()                                  // any expression
 setup {                                           // or a block
-    write_file("out/marker.txt", "x")
-    undo(|| remove_file("out/marker.txt"))
+    write_file("out/marker.txt", "x", undo: true)
+    log("marker written")
 }
 setup let admin = createUser(role: "admin").body  // a value the tests use
 teardown log("all done")                          // custom cleanup

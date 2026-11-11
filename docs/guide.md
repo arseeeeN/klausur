@@ -173,7 +173,8 @@ test "roles" (role, can_delete) cases [
 - **`parallel` only for tests that don't care what else runs.** A test that checks a global
   count ("exactly one document exists") must stay serial. Unmarked tests run alone.
 - **Fixture files restore themselves**: `write_file(path, content, undo: true)` puts back what was
-  there (or removes the file) when the case ends, so a fixture can't destroy an existing file.
+  there (or removes the file and the directories it created) when the case ends, so a fixture
+  can't destroy an existing file. Prefer it to a hand-written `undo(|| remove_file(path))`.
 - **Check the service's log** when "no new errors" is part of done:
   `let log = watch_file(log_path)` before, `expect !log.lines().some(|l| l.contains("ERROR"))`
   after. `today()` helps with dated log names.
