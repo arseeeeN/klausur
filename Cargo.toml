@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "development-tools::testing"]
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6", features = ["derive"] }
 cookie_store = { version = "0.22", default-features = false }
-cssparser = "0.37"
+cssparser = "0.38"
 csv = "1"
 ctrlc = "3"
 dotenvy = "0.15"
@@ -24,14 +24,14 @@ percent-encoding = "2"
 regex = "1"
 rhai = { version = "1.26", features = ["internals", "serde"] }
 roxmltree = "0.21.1"
-scraper = "0.27.0"
-selectors = "0.38"
+scraper = "0.29.0"
+selectors = "0.41"
 self-replace = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_json_path = "0.7.2"
-sha2 = "0.10"
+sha2 = "0.11"
 strsim = "0.11"
-tungstenite = "0.29"
+tungstenite = "0.30"
 ureq = "3"
 url = "2"
 
