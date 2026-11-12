@@ -62,6 +62,7 @@ impl<T: Transport> EarlyResponse<T> {
         let probe = NextTimeout {
             after: std::time::Duration::from_millis(1).into(),
             reason: Timeout::SendBody,
+            ..NextTimeout::default()
         };
         matches!(self.inner.await_input(probe), Ok(true))
     }
