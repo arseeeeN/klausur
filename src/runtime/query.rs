@@ -36,8 +36,7 @@ fn fail(message: String) -> Box<EvalAltResult> {
 }
 
 fn parse_selector(css: &str) -> R<SelectorList<Simple>> {
-    let mut input = cssparser::ParserInput::new(css);
-    let mut parser = cssparser::Parser::new(&mut input);
+    let mut parser = cssparser::Parser::new(css);
     SelectorList::parse(&scraper::selector::Parser, &mut parser, ParseRelative::No).map_err(|e| {
         let kind = scraper::error::SelectorErrorKind::from(e);
         fail(format!("`{css}` isn't a valid CSS selector: {kind}"))
