@@ -304,3 +304,10 @@ keep `this` with defaults and named arguments. Still open:
   captions with `aria-labelledby`, so these would work there and in most other UIs.
 - **Frames.** Richtext fields (CKEditor) and Magnolia's page editor live in iframes: the
   library's next steps need `frame_locator`.
+- **Libraries from outside the suite.** `import` only takes paths relative to the importing
+  file, so a project checks the library out into its suite folder by hand and pins a commit.
+  Versioned imports (from a git tag, a URL, or a lock file) need a design of their own first:
+  where they're cached, how a run stays reproducible offline, and how updates are reviewed.
+- **Per-file namespaces.** All files share one namespace (an open question in SPEC §12), so every
+  name in the library carries an `mgnl_` prefix to avoid colliding with a project's own
+  helpers. `import "…" as mgnl` with real namespaces would let it use plain names.
