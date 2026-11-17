@@ -916,6 +916,9 @@ impl Compiler<'_> {
         lib.push_gen(") {");
         r.rewrite_block(d.body.start + 1, d.body.end - 1, lib)?;
         lib.push_gen("}\n");
+        // The overloads and the `__kw` variant repeat the body instead of calling `name(…)`: a
+        // plain call would drop `this`, so `obj.method()` with a default or a named argument
+        // couldn't see `obj`.
         let required = d.params.iter().take_while(|p| p.default.is_none()).count();
         for n in required..d.params.len() {
             lib.push_gen(&format!("fn {}({}) {{ ", d.name, names[..n].join(", ")));
@@ -925,7 +928,8 @@ impl Compiler<'_> {
                 r.rewrite(def.start, def.end, lib)?;
                 lib.push_gen("; ");
             }
-            lib.push_gen(&format!("{}({}) }}\n", d.name, names.join(", ")));
+            r.rewrite_block(d.body.start + 1, d.body.end - 1, lib)?;
+            lib.push_gen("}\n");
         }
         // fn name__kw(m): named and mixed arguments.
         let allowed: Vec<String> = names
@@ -952,7 +956,10 @@ impl Compiler<'_> {
             }
             lib.push_gen(" }; ");
         }
-        lib.push_gen(&format!("{}({}) }}\n", d.name, names.join(", ")));
+        // `m` would shadow a variable of the body's own: keep it out of the way.
+        lib.push_gen("let m = (); ");
+        r.rewrite_block(d.body.start + 1, d.body.end - 1, lib)?;
+        lib.push_gen("}\n");
         Ok(())
     }
 

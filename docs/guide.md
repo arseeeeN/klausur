@@ -318,8 +318,8 @@ environment (`env("API_TOKEN")`); `.env` and `.env.<name>` (with `--env <name>`)
 - **Strings.** `"…"` is plain; interpolation needs backticks: `` `id-${x}` ``. In request
   blocks, `{{expr}}` interpolates (as JSON in JSON bodies, URL-encoded in URLs).
 - **No named arguments inside `${…}`**: `` `${f(a: 1)}` `` doesn't load. Assign to a variable
-  first. Named arguments on your own functions work as calls, `f(x, a: 1)`, not as methods,
-  `x.f(a: 1)`.
+  first. Named arguments and defaults work on your own functions called as methods too (0.7+:
+  `x.f(a: 1)`), but not on a map's function properties (`obj.save()` with `save: Fn("…")`).
 - **Missing map keys are `()`**, not an error: `body.missing == null` is true. Check with
   `expect body.id is int` rather than relying on a later failure.
 - **`try` is a statement**, not an expression: `try { … } catch (e) { … }`.

@@ -16,7 +16,7 @@ use super::value;
 use super::{Failure, PageReport, Shared};
 use cdp::Connection;
 use locator::Locator;
-use page::{Page, PageInner, Routes, Timeouts};
+use page::{Page, PageInner, Routes, Timeouts, WaitUntil};
 use rhai::{Array, Dynamic, Engine, EvalAltResult, Map};
 use route::{Action, Route};
 use serde_json::json;
@@ -96,7 +96,7 @@ impl Session {
         })
     }
 
-    fn open(&self, shared: &Shared, url: &str) -> R<Page> {
+    fn open(&self, shared: &Shared, url: &str, until: WaitUntil) -> R<Page> {
         let call = |method: &str, params: serde_json::Value| {
             self.conn
                 .call(None, method, params, CALL_TIMEOUT)
@@ -143,8 +143,78 @@ impl Session {
             page.sync_routes()?;
         }
         self.pages.borrow_mut().push(page.clone());
-        page.navigate(shared, url)?;
+        page.navigate(shared, url, until)?;
         Ok(page)
+    }
+
+    /// `browser().add_cookies([…])`, like Playwright's `context.addCookies`: each cookie needs a
+    /// `name`, a `value`, and a `url` or a `domain` (with `path`, `/` by default).
+    fn add_cookies(&self, cookies: Array) -> R<()> {
+        let mut params = Vec::new();
+        for c in cookies {
+            let Some(map) = c.clone().try_cast::<Map>() else {
+                return Err(fail(format!(
+                    "`add_cookies` takes maps like `#{{ name: \"sid\", value: \"…\", url: base }}`, not {}",
+                    crate::runtime::value::display(&c)
+                )));
+            };
+            params.push(cookie_param(map)?);
+        }
+        self.conn
+            .call(
+                None,
+                "Storage.setCookies",
+                json!({ "cookies": params, "browserContextId": self.context }),
+                CALL_TIMEOUT,
+            )
+            .map_err(|e| fail(format!("couldn't add the cookies: {e}")))?;
+        Ok(())
+    }
+
+    /// `browser().cookies()`: every cookie of the context, as maps with the keys `add_cookies`
+    /// takes (`expires` is `()` for a session cookie).
+    fn cookies(&self) -> R<Array> {
+        let r = self
+            .conn
+            .call(
+                None,
+                "Storage.getCookies",
+                json!({ "browserContextId": self.context }),
+                CALL_TIMEOUT,
+            )
+            .map_err(|e| fail(format!("couldn't read the cookies: {e}")))?;
+        let list = r["cookies"].as_array().cloned().unwrap_or_default();
+        let cookies = list
+            .iter()
+            .map(|c| {
+                let mut m = Map::new();
+                for (key, cdp) in [
+                    ("name", "name"),
+                    ("value", "value"),
+                    ("domain", "domain"),
+                    ("path", "path"),
+                ] {
+                    m.insert(key.into(), c[cdp].as_str().unwrap_or_default().into());
+                }
+                for (key, cdp) in [("http_only", "httpOnly"), ("secure", "secure")] {
+                    m.insert(key.into(), c[cdp].as_bool().unwrap_or(false).into());
+                }
+                m.insert(
+                    "same_site".into(),
+                    c["sameSite"]
+                        .as_str()
+                        .map_or(Dynamic::UNIT, |v| Dynamic::from(v.to_string())),
+                );
+                // CDP gives -1 for a session cookie.
+                let expires = c["expires"].as_f64().filter(|e| *e >= 0.0);
+                m.insert(
+                    "expires".into(),
+                    expires.map_or(Dynamic::UNIT, |e| Dynamic::from_int(e as i64)),
+                );
+                Dynamic::from_map(m)
+            })
+            .collect();
+        Ok(cookies)
     }
 
     /// Close every page and the context, so the next case starts without cookies or storage.
@@ -266,6 +336,94 @@ fn session(shared: &Shared) -> R<Rc<Session>> {
     let s = Rc::new(Session::new(shared).map_err(Failure::into_err)?);
     *slot.borrow_mut() = Some(s.clone());
     Ok(s)
+}
+
+/// `wait_until:` of `open`, `navigate` and `reload`; `"networkidle"` when it isn't given.
+fn wait_until(named: &Map) -> R<WaitUntil> {
+    match named.get("wait_until") {
+        None => Ok(WaitUntil::NetworkIdle),
+        Some(v) => WaitUntil::parse(&v.to_string()).map_err(fail),
+    }
+}
+
+/// The URL and the `wait_until:` of `open(url, wait_until: …)` and `navigate(url, wait_until: …)`.
+fn url_and_wait_until(opts: Map, call: &str) -> R<(String, WaitUntil)> {
+    let (positional, named) = options(opts, &["wait_until"], call)?;
+    let Some(url) = positional.first() else {
+        return Err(fail(format!("`{call}` needs a URL")));
+    };
+    Ok((url.to_string(), wait_until(&named)?))
+}
+
+/// One cookie of `add_cookies`, as CDP's `CookieParam`.
+fn cookie_param(map: Map) -> R<serde_json::Value> {
+    let (_, named) = options(
+        map,
+        &[
+            "name",
+            "value",
+            "url",
+            "domain",
+            "path",
+            "expires",
+            "http_only",
+            "secure",
+            "same_site",
+        ],
+        "add_cookies",
+    )?;
+    let text = |key: &str| {
+        named
+            .get(key)
+            .filter(|v| !v.is_unit())
+            .map(|v| v.to_string())
+    };
+    let (Some(name), Some(value)) = (text("name"), text("value")) else {
+        return Err(fail(
+            "each cookie of `add_cookies` needs a `name` and a `value`",
+        ));
+    };
+    let mut p = json!({ "name": name, "value": value });
+    match (text("url"), text("domain")) {
+        (Some(url), None) => p["url"] = json!(url),
+        (None, Some(domain)) => {
+            p["domain"] = json!(domain);
+            p["path"] = json!(text("path").unwrap_or_else(|| "/".into()));
+        }
+        _ => {
+            return Err(fail(format!(
+                "cookie `{name}` of `add_cookies` needs either a `url` or a `domain`"
+            )));
+        }
+    }
+    if let Some(path) = text("path") {
+        p["path"] = json!(path);
+    }
+    for (key, cdp) in [("http_only", "httpOnly"), ("secure", "secure")] {
+        if let Some(v) = named.get(key).filter(|v| !v.is_unit()) {
+            p[cdp] = json!(
+                v.as_bool()
+                    .map_err(|_| fail(format!("`{key}` of a cookie is true or false")))?
+            );
+        }
+    }
+    if let Some(same_site) = text("same_site") {
+        if !["Strict", "Lax", "None"].contains(&same_site.as_str()) {
+            return Err(fail(format!(
+                "`same_site` of a cookie is \"Strict\", \"Lax\" or \"None\", not \"{same_site}\""
+            )));
+        }
+        p["sameSite"] = json!(same_site);
+    }
+    if let Some(expires) = named.get("expires").filter(|v| !v.is_unit()) {
+        let secs = expires
+            .as_int()
+            .map(|i| i as f64)
+            .or_else(|_| expires.as_float())
+            .map_err(|_| fail("`expires` of a cookie is a Unix time in seconds"))?;
+        p["expires"] = json!(secs);
+    }
+    Ok(p)
 }
 
 /// What a route answers with: `"abort"`, or a response map like Playwright's `route.fulfill`:
@@ -478,8 +636,17 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     });
     let s = shared.clone();
     engine.register_fn("open", move |b: &mut BrowserHandle, url: &str| {
-        b.0.open(&s, url)
+        b.0.open(&s, url, WaitUntil::NetworkIdle)
     });
+    let s = shared.clone();
+    engine.register_fn("open__kw", move |b: &mut BrowserHandle, opts: Map| {
+        let (url, until) = url_and_wait_until(opts, "open")?;
+        b.0.open(&s, &url, until)
+    });
+    engine.register_fn("add_cookies", |b: &mut BrowserHandle, cookies: Array| {
+        b.0.add_cookies(cookies)
+    });
+    engine.register_fn("cookies", |b: &mut BrowserHandle| b.0.cookies());
     engine.register_get("pages", |b: &mut BrowserHandle| -> Array {
         b.0.pages
             .borrow()
@@ -572,10 +739,22 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
 
     // --- Pages ----------------------------------------------------------------------------
     let s = shared.clone();
-    engine.register_fn("reload", move |p: &mut Page| p.reload(&s));
+    engine.register_fn("reload", move |p: &mut Page| {
+        p.reload(&s, WaitUntil::NetworkIdle)
+    });
+    let s = shared.clone();
+    engine.register_fn("reload__kw", move |p: &mut Page, opts: Map| -> R<()> {
+        let (_, named) = options(opts, &["wait_until"], "reload")?;
+        p.reload(&s, wait_until(&named)?)
+    });
     let s = shared.clone();
     engine.register_fn("navigate", move |p: &mut Page, url: &str| {
-        p.navigate(&s, url)
+        p.navigate(&s, url, WaitUntil::NetworkIdle)
+    });
+    let s = shared.clone();
+    engine.register_fn("navigate__kw", move |p: &mut Page, opts: Map| -> R<()> {
+        let (url, until) = url_and_wait_until(opts, "navigate")?;
+        p.navigate(&s, &url, until)
     });
     let s = shared.clone();
     engine.register_get("url", move |p: &mut Page| p.read(&s, "location.href"));

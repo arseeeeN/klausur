@@ -946,6 +946,19 @@ test "a search shows the page that was just indexed" rollback writer() {
 - `browser().open(url)` opens a page and waits until it has loaded and its network has been
   quiet for 300 ms (at most 3 s). Playwright waits for `load` only, but frameworks such as
   SvelteKit attach their event handlers after it, so a click right after `load` can do nothing.
+  Requests the previous document left open (a long poll, say) don't count after `navigate` and
+  `reload`: Chrome doesn't always report their end once the document is gone.
+- `open`, `navigate` and `reload` take `wait_until:`, as Playwright's do: `"networkidle"` is
+  the default above, `"load"` waits for the `load` event only. Use it for an app that always
+  keeps a request open (Vaadin's push, a long poll), which would wait the full 3 s every time,
+  and wait for the app's own ready signal instead: `browser().open(url, wait_until: "load")`.
+- `browser().add_cookies([#{ name, value, url }])` adds cookies to the context, like
+  Playwright's `context.addCookies`: each needs a `url`, or a `domain` (and `path`, `/` by
+  default); `expires` (Unix seconds), `http_only`, `secure` and `same_site` (`"Strict"`,
+  `"Lax"`, `"None"`) are optional. `browser().cookies()` returns the context's cookies as maps
+  with the same keys (`expires` is `()` for a session cookie). A session from an API login
+  saves logging in through the UI in every test:
+  `browser().add_cookies([#{ name: "JSESSIONID", value: sid, url: base }])`.
 - Dialogs (`alert`, `confirm`, …) are dismissed, as in Playwright, unless the page called
   `accept_dialogs()`. Either way they show up in `console()`.
 
@@ -993,8 +1006,8 @@ is `page.locator(sel).click()`.
 
 | On a page | Does |
 |---|---|
-| `navigate(url)` | Load another URL in the same page. When only the `#fragment` changes, it returns right away: the document stays, and no load follows |
-| `reload()` | Reload the page and wait as `navigate` does |
+| `navigate(url)` | Load another URL in the same page. When only the `#fragment` changes, it returns right away: the document stays, and no load follows. `wait_until: "load"` skips waiting for the network (§14.1) |
+| `reload()` | Reload the page and wait as `navigate` does; takes `wait_until:` too |
 | `url`, `title`, `html()` | The page's URL, title and HTML; `html_select(page.html(), sel)` works |
 | `evaluate(js)` | Run JavaScript in the page and return its result (promises are awaited) |
 | `console()` | Console errors and warnings, uncaught exceptions and dialogs so far |

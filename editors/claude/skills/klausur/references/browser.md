@@ -31,13 +31,21 @@ them: `--tag ui` runs only tagged tests. `--headed` shows the window.
   things such as LLM answers. `ignore_requests: ["**/login*"]` (0.3+) keeps expected
   failures (a login page served with 401) out of failure reports.
 - `browser().open(url)`: a new page, loaded, with the network quiet for a moment (frameworks
-  attach click handlers after `load`).
+  attach click handlers after `load`), at most 3 s. An app that always keeps a request open
+  (Vaadin's push, a long poll) hits those 3 s on every `open`, `navigate` and `reload`: pass
+  `wait_until: "load"` (0.7+) and wait for the app's own ready state instead.
 - `page.navigate(url)` (when only the `#fragment` changes it returns at once: same document, no
-  load; before 0.3 it hung), `page.reload()` (0.3+; for apps that read the fragment only on load,
+  load; before 0.3 it hung; before 0.7 a request the previous page left open, such as a long
+  poll, made it wait 3 s), `page.reload()` (0.3+; for apps that read the fragment only on load,
   such as Vaadin: `navigate` to the fragment, then `reload`), `page.url`, `page.title`, `page.html()` (feed it to `html_select`),
   `page.evaluate(js)` (result as a value; promises awaited), `page.console()` (errors, warnings,
   dialogs), `page.screenshot(path)`, `page.close()`.
 - Dialogs (`alert`, `confirm`) are dismissed unless `page.accept_dialogs()` was called.
+- `browser().add_cookies([#{ name, value, url }])` (0.7+, like Playwright's `addCookies`; or
+  `domain` + `path` instead of `url`; optional `expires`, `http_only`, `secure`, `same_site`) and
+  `browser().cookies()`. **Log in once through the API, not through the login page in every
+  test**: put the API login's session cookie into the browser, then `open` the page you test.
+  Logging in through a heavy admin UI (Magnolia's admincentral) costs seconds per test.
 
 `goto` and `eval` are reserved words in Rhai, hence `navigate` and `evaluate`.
 

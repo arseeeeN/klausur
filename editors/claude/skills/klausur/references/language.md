@@ -309,8 +309,10 @@ as JSON when they can be. Exit codes: 0 ok, 1 failed, 2 load error, 3 dirty.
   reject, that state stays. Register cleanup when it matters:
   `if r.status == 201 { undo(|| deleteUser(r.body.id)) }`.
 - **Named arguments** work on calls to functions and requests (`f(a: 1)`) and on built-in
-  methods that take options (`page.wait(sel, state: "hidden")`), but not on your own functions
-  called as methods: `x.f(a: 1)` loses `x`. Write `f(x, a: 1)`.
+  methods that take options (`page.wait(sel, state: "hidden")`). On your own functions called
+  as methods (`x.f(a: 1)`, or `x.f()` leaving out a default) they lost `x` before 0.7: write
+  `f(x, a: 1)` there. A map's function property (`obj.save()` with `save: Fn("…")`) can't take
+  named arguments.
 - **No named arguments inside `${…}`**: `` `${f(a: 1)}` `` is a load error. Assign first:
   `let v = f(a: 1)`, then `` `${v}` ``.
 - **Slashes in URL values become `%2F`**: a path parameter needs `url_path(x)` (0.3+) or

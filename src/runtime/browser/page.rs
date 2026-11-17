@@ -8,12 +8,32 @@ use crate::runtime::Shared;
 use crate::runtime::builtins::base64_decode;
 use serde_json::{Value as Json, json};
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// What opening, navigating and reloading wait for: `wait_until:` `"load"`, or by default
+/// `"networkidle"` (the `load` event, then the network quiet for a moment, at most `SETTLE_MAX`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WaitUntil {
+    Load,
+    NetworkIdle,
+}
+
+impl WaitUntil {
+    pub fn parse(v: &str) -> Result<WaitUntil, String> {
+        match v {
+            "load" => Ok(WaitUntil::Load),
+            "networkidle" => Ok(WaitUntil::NetworkIdle),
+            other => Err(format!(
+                "`wait_until` is \"load\" or \"networkidle\", not \"{other}\""
+            )),
+        }
+    }
+}
 
 /// After loading, a page counts as settled once no request was in flight for this long.
 const QUIET: Duration = Duration::from_millis(300);
@@ -78,8 +98,13 @@ pub struct Request {
 /// for failure reports.
 #[derive(Default)]
 pub(super) struct Net {
-    /// Request id → "METHOD url".
-    in_flight: HashMap<String, String>,
+    /// Request id → "METHOD url", and the loader (document) that sent it.
+    in_flight: HashMap<String, (String, String)>,
+    /// Loaders of documents seen so far, and those of documents the page has left: their
+    /// requests no longer count, because Chrome doesn't always report the end of a request whose
+    /// document is gone (a long poll, say), and waiting for one would always hit `SETTLE_MAX`.
+    loaders: HashSet<String>,
+    left: HashSet<String>,
     last_change: Option<Instant>,
     pub failed: Vec<String>,
     pub requests: Vec<Request>,
@@ -117,7 +142,13 @@ impl Net {
                 if matches!(params["type"].as_str(), Some("EventSource" | "WebSocket")) {
                     return;
                 }
-                self.in_flight.insert(id, format!("{method} {url}"));
+                let loader = params["loaderId"].as_str().unwrap_or_default().to_string();
+                if self.left.contains(&loader) {
+                    return;
+                }
+                self.loaders.insert(loader.clone());
+                self.in_flight
+                    .insert(id, (format!("{method} {url}"), loader));
             }
             "Network.responseReceived" => {
                 let status = params["response"]["status"].as_u64().unwrap_or(0);
@@ -125,7 +156,7 @@ impl Net {
                     self.requests[i].outcome = Some(Ok(status as u16));
                 }
                 if status >= 400
-                    && let Some(what) = self.in_flight.get(&id)
+                    && let Some((what, _)) = self.in_flight.get(&id)
                 {
                     self.failed.push(format!("{status} {what}"));
                 }
@@ -139,7 +170,7 @@ impl Net {
                     let why = params["errorText"].as_str().unwrap_or("failed");
                     self.requests[i].outcome = Some(Err(why.to_string()));
                 }
-                if let Some(what) = self.in_flight.remove(&id)
+                if let Some((what, _)) = self.in_flight.remove(&id)
                     && params["canceled"].as_bool() != Some(true)
                 {
                     let why = params["errorText"].as_str().unwrap_or("failed");
@@ -149,6 +180,17 @@ impl Net {
             _ => return,
         }
         self.last_change = Some(Instant::now());
+    }
+
+    /// When the page loads another document: what the documents so far still have in flight
+    /// doesn't count from now on, except for `new`, the loader of the document being loaded,
+    /// whose first request may already be here.
+    fn leave_documents(&mut self, new: Option<&str>) {
+        self.left
+            .extend(self.loaders.drain().filter(|l| Some(l.as_str()) != new));
+        let left = &self.left;
+        self.in_flight
+            .retain(|_, (_, loader)| !left.contains(loader));
     }
 
     fn settled(&self) -> bool {
@@ -382,10 +424,16 @@ impl Page {
         }
     }
 
-    pub(super) fn navigate(&self, shared: &Shared, url: &str) -> R<()> {
+    pub(super) fn navigate(&self, shared: &Shared, url: &str, until: WaitUntil) -> R<()> {
         // Mark the old document, so the wait below can't mistake it for the new one.
         self.eval("window.__klausurOld = true")?;
         let r = self.call("Page.navigate", json!({ "url": url }))?;
+        // Not for a `#fragment` change (no loader id below): the document, and its requests, stay.
+        if let Some(loader) = r.get("loaderId").and_then(Json::as_str)
+            && let Ok(mut net) = self.0.net.lock()
+        {
+            net.leave_documents(Some(loader));
+        }
         if let Some(e) = r.get("errorText").and_then(Json::as_str) {
             return Err(fail(format!("couldn't open {url}: {e}")));
         }
@@ -395,19 +443,23 @@ impl Page {
         if r.get("loaderId").is_none() {
             return Ok(());
         }
-        self.wait_loaded(shared, &format!("navigate(\"{url}\")"))
+        self.wait_loaded(shared, &format!("navigate(\"{url}\")"), until)
     }
 
     /// Reload the page, like the browser's reload button, and wait as `navigate` does.
-    pub(super) fn reload(&self, shared: &Shared) -> R<()> {
+    pub(super) fn reload(&self, shared: &Shared, until: WaitUntil) -> R<()> {
         self.eval("window.__klausurOld = true")?;
+        // Before reloading, so the new document's loader can't be among them yet.
+        if let Ok(mut net) = self.0.net.lock() {
+            net.leave_documents(None);
+        }
         self.call("Page.reload", json!({}))?;
-        self.wait_loaded(shared, "reload()")
+        self.wait_loaded(shared, "reload()", until)
     }
 
     /// After a new document started loading: wait for its `load`, then for the network to
     /// settle.
-    fn wait_loaded(&self, shared: &Shared, action: &str) -> R<()> {
+    fn wait_loaded(&self, shared: &Shared, action: &str, until: WaitUntil) -> R<()> {
         self.wait_for(shared, action, || {
             // During the switch to the new document an evaluation can fail; that's "not yet".
             let state = self
@@ -421,7 +473,11 @@ impl Page {
         })?;
         // Playwright waits for `load` only. But frameworks such as SvelteKit and Next.js attach
         // their event handlers from scripts `load` doesn't wait for, so a click right after it
-        // can hit a button that does nothing yet. Wait for the network to settle too.
+        // can hit a button that does nothing yet. Wait for the network to settle too, unless
+        // the caller knows better (an app that always keeps a request open, say).
+        if until == WaitUntil::Load {
+            return Ok(());
+        }
         let started = Instant::now();
         while started.elapsed() < SETTLE_MAX.min(self.0.timeouts.action.get()) {
             if self.0.net.lock().map(|n| n.settled()).unwrap_or(true) {

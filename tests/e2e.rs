@@ -63,6 +63,39 @@ fn run_a_single_request() {
     );
 }
 
+/// A function called as a method keeps `this` when a default fills in an argument or an argument
+/// is named: the generated variants used to call the function plainly, which dropped `this`.
+#[test]
+fn methods_keep_this_with_defaults_and_named_arguments() {
+    let server = start();
+    let p = project(
+        "methods",
+        r##"
+fn plus(b = 1) { this + b }
+fn dialog(title) { #{ title: title, save: Fn("dialog_save") } }
+fn dialog_save(close = true) { `${this.title}: ${close}` }
+fn broken(x = 1) { this.nope.oops() }
+
+test "methods" {
+    let x = 10
+    expect x.plus() == 11
+    expect x.plus(b: 5) == 15
+    expect dialog("Properties").save() == "Properties: true"
+}
+
+test "an error in a default's variant points at the body" {
+    let x = #{}
+    x.broken()
+}
+"##,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in ["✓ methods", "t.test.kl:6:30", "1 passed, 1 failed"] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+}
+
 #[test]
 fn run_a_function_with_named_arguments() {
     let server = start();
@@ -1469,6 +1502,198 @@ test "waits end with the test" timeout("3s") {{
     );
     // Page handles stay out of `where:`; the page section describes them.
     assert!(!out.stdout.contains("\n    page = "), "{}", out.all());
+}
+
+/// A request the previous document left open never finishes from Chrome's point of view, so
+/// waiting for the network to settle after `navigate` mustn't wait for it.
+#[test]
+fn navigation_does_not_wait_for_requests_of_the_page_it_leaves() {
+    let server = start();
+    let p = Project::new("browser-navigation");
+    p.file(
+        "busy.html",
+        &format!(
+            r##"<!doctype html><title>Busy</title>
+<button id="poll" onclick="fetch('{base}/slow?ms=8000', {{ mode: 'no-cors' }}); this.textContent = 'polling'">Poll</button>"##,
+            base = server.base
+        ),
+    );
+    p.file("next.html", "<!doctype html><title>Next</title><p>next</p>");
+    p.file(
+        "polling.html",
+        &format!(
+            r##"<!doctype html><title>Polling</title>
+<script>fetch('{base}/slow?ms=8000', {{ mode: 'no-cors' }})</script><p id="ready">ready</p>"##,
+            base = server.base
+        ),
+    );
+    let url = |name: &str| {
+        let path = p.path(name).display().to_string().replace('\\', "/");
+        format!("file:///{}", path.trim_start_matches('/'))
+    };
+    p.file(
+        "n.test.kl",
+        &format!(
+            r##"
+test "navigate after a long request" {{
+    let page = browser().open("{busy}")
+    page.locator("#poll").click()
+    expect page.locator("#poll").text() == "polling"
+    let started = timestamp()
+    page.navigate("{next}")
+    let took = started.elapsed
+    expect page.title == "Next"
+    expect took < 2.0
+}}
+
+test "wait_until load doesn't wait for a page that keeps a request open" {{
+    let started = timestamp()
+    let page = browser().open("{polling}", wait_until: "load")
+    expect started.elapsed < 2.0
+    started = timestamp()
+    page.reload(wait_until: "load")
+    page.navigate("{polling}", wait_until: "load")
+    expect started.elapsed < 2.0
+    expect page.locator("#ready").text() == "ready"
+}}
+
+test "wait_until takes load or networkidle" {{
+    browser().open("{next}", wait_until: "commit")
+}}
+
+test "reload after a long request" {{
+    let page = browser().open("{busy}")
+    page.locator("#poll").click()
+    expect page.locator("#poll").text() == "polling"
+    let started = timestamp()
+    page.reload()
+    let took = started.elapsed
+    expect page.locator("#poll").text() == "Poll"
+    expect took < 2.0
+}}
+"##,
+            busy = url("busy.html"),
+            polling = url("polling.html"),
+            next = url("next.html"),
+        ),
+    );
+    let out = p.run(&server, &["test"]);
+    if out.all().contains("couldn't find Chrome") {
+        eprintln!("skipping: no Chrome on this machine");
+        return;
+    }
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ navigate after a long request",
+        "✓ wait_until load doesn't wait for a page that keeps a request open",
+        r#"`wait_until` is "load" or "networkidle", not "commit""#,
+        "✓ reload after a long request",
+        "3 passed, 1 failed",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+}
+
+/// Styled checkboxes draw their label over the input; the label is part of the control.
+#[test]
+fn checkbox_under_its_own_label() {
+    let server = start();
+    let p = Project::new("browser-styled-checkbox");
+    p.file(
+        "form.html",
+        r##"<!doctype html><title>Styled</title>
+<span style="position:relative;display:inline-block">
+  <input type="checkbox" id="styled" style="position:absolute;left:0;top:0">
+  <label for="styled" style="position:relative;display:inline-block;padding:4px 4px 4px 0;background:#eee;width:120px">Styled box</label>
+</span>
+<span style="position:relative;display:inline-block">
+  <input type="checkbox" id="other" style="position:absolute;left:0;top:0">
+  <label for="styled" style="position:relative;display:inline-block;background:#ddd;width:120px">Not its label</label>
+</span>"##,
+    );
+    let path = p.path("form.html").display().to_string().replace('\\', "/");
+    let url = format!("file:///{}", path.trim_start_matches('/'));
+    p.file(
+        "s.test.kl",
+        &format!(
+            r##"
+test "a checkbox covered by its own label" {{
+    let page = browser().open("{url}")
+    page.locator("#styled").check()
+    expect page.locator("#styled").checked()
+    page.locator("#styled").uncheck()
+    expect !page.locator("#styled").checked()
+}}
+
+test "a checkbox covered by another one's label" {{
+    browser(timeout: "1s").open("{url}").locator("#other").check()
+}}
+"##
+        ),
+    );
+    let out = p.run(&server, &["test"]);
+    if out.all().contains("couldn't find Chrome") {
+        eprintln!("skipping: no Chrome on this machine");
+        return;
+    }
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ a checkbox covered by its own label",
+        r#"<label> "Not its label", which would get the click"#,
+        "1 passed, 1 failed",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
+}
+
+/// Logging in through a login page in every test is slow; a session from an API login can go
+/// straight into the browser instead.
+#[test]
+fn browser_cookies() {
+    let server = start();
+    let p = Project::new("browser-cookies");
+    p.file(
+        "c.test.kl",
+        r##"
+let base = env("BASE")
+
+test "added cookies are sent and can be read back" {
+    browser().add_cookies([
+        #{ name: "sid", value: "abc", url: base },
+        #{ name: "theme", value: "dark", domain: "127.0.0.1", path: "/echo", http_only: true, same_site: "Lax" },
+    ])
+    let page = browser().open(`${base}/echo/cookies`)
+    let echoed = page.evaluate("document.body.innerText")
+    expect echoed.contains("sid=abc") && echoed.contains("theme=dark")
+    let cookies = browser().cookies().sorted(|a, b| if a.name < b.name { -1 } else { 1 })
+    expect cookies.map(|c| c.name) == ["sid", "theme"]
+    expect cookies[1].path == "/echo" && cookies[1].http_only && cookies[1].same_site == "Lax"
+    expect cookies[0].expires == ()
+}
+
+test "a cookie without url or domain" {
+    browser().add_cookies([#{ name: "sid", value: "abc" }])
+}
+
+test "a misspelled same_site" {
+    browser().add_cookies([#{ name: "sid", value: "abc", url: env("BASE"), same_site: "lax" }])
+}
+"##,
+    );
+    let out = p.run(&server, &["test"]);
+    if out.all().contains("couldn't find Chrome") {
+        eprintln!("skipping: no Chrome on this machine");
+        return;
+    }
+    assert_eq!(out.code, 1, "{}", out.all());
+    for line in [
+        "✓ added cookies are sent and can be read back",
+        "cookie `sid` of `add_cookies` needs either a `url` or a `domain`",
+        r#"`same_site` of a cookie is "Strict", "Lax" or "None", not "lax""#,
+        "1 passed, 2 failed",
+    ] {
+        assert!(out.stdout.contains(line), "missing {line:?}\n{}", out.all());
+    }
 }
 
 #[test]

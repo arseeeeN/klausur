@@ -220,3 +220,23 @@ stay allowed. It's one mechanism with a default per capability, not two systems:
 capability takes both `--allow-x` and `--deny-x`, and a suite that uses `EXEC` turns it on once
 in its project config, so nobody types a flag. This has to ship together with `EXEC`: denying it
 later would break suites.
+
+## From the Magnolia AdminCentral spike (klausur-magnolia)
+
+Building https://github.com/arseeeeN/klausur-magnolia against Magnolia 6.4's Vaadin UI. Fixed
+for 0.7: requests of a left page no longer hold up `navigate`/`reload`, `wait_until: "load"`,
+`browser().add_cookies`/`cookies()`, clicks may land on the control's own label, and methods
+keep `this` with defaults and named arguments. Still open:
+
+- **Named arguments on a map's function properties.** `obj.save(close: false)` becomes
+  `obj.save__kw(…)`, which the map doesn't have. (Defaults and named arguments on functions called
+  as methods keep `this` since 0.7.)
+- **No exact text match in `filter`.** `has_text` matches substrings, so "Title" also finds
+  "Title (de)". Playwright takes a regex or `exact: true`. The library matches labels in
+  `evaluate` instead.
+- **No `get_attribute`** (Playwright's `locator.getAttribute`), and no way to run JavaScript on a
+  located element. The library queries the DOM with `page.evaluate` from the document root.
+- **No label or role locators** (`get_by_label`, `get_by_role`). Vaadin links inputs to their
+  captions with `aria-labelledby`, so these would work there and in most other UIs.
+- **Frames.** Richtext fields (CKEditor) and Magnolia's page editor live in iframes: the
+  library's next steps need `frame_locator`.

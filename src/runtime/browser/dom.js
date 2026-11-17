@@ -166,7 +166,10 @@
       out.box = [r.left, r.top, r.width, r.height];
       const x = r.left + r.width / 2, y = r.top + r.height / 2;
       const hit = hitAt(x, y);
-      if (hit && inside(el, hit)) { out.x = x; out.y = y; }
+      // The element's own label counts as the element, as in Playwright: a click on it reaches
+      // the control, and styled checkboxes (Vaadin's, say) draw the label over the input.
+      const label = hit && hit.closest && hit.closest('label');
+      if (hit && (inside(el, hit) || (label && label.control === el))) { out.x = x; out.y = y; }
       else out.covered_by = hit ? describe(hit) : 'nothing: it is off screen';
       break;
     }
