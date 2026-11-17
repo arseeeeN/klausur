@@ -172,6 +172,9 @@ The HTTP method can be a variable, written as one interpolation in place of the 
   - A string is sent as-is, and a blob as bytes.
   - `multipart(#{ … })` becomes a `multipart/form-data` body. Plain values become fields,
     `file(...)` values become file parts, and arrays become repeated parts.
+  - `form(#{ … })` becomes an `application/x-www-form-urlencoded` body, the way an HTML form
+    posts it: names and values encoded, spaces as `+`, arrays as repeated fields, `()` left
+    out. A file or blob value is an error; files need `multipart`.
   - A `file(...)` is sent as raw bytes, with its content type.
 - In header values, `{{expr}}` inserts the value as plain text. **A header with a null
   interpolation is left out**, so `Authorization: Bearer {{jwt}}` with `jwt = ()` sends no
@@ -182,6 +185,9 @@ The HTTP method can be a variable, written as one interpolation in place of the 
 - `raw(x)` inserts `x` verbatim everywhere: no URL encoding, and raw JSON in JSON bodies.
 - `url_path(x)` inserts a path into a URL: each segment percent-encoded, the slashes kept, so
   `{{base}}/.rest/nodes/v1/website{{url_path(page)}}` works for `page = "/my site/news"`.
+- `url_encode(x)` returns `x` percent-encoded as one component, for text built by hand (a query
+  string in a variable, a raw body). Interpolations in URLs are encoded already, so
+  `{{url_encode(x)}}` there encodes twice.
 - Inside a JSON string literal, `"id-{{x}}"` inserts the value escaped, without quotes.
 - After interpolation, a JSON body must be valid JSON; otherwise the request fails before
   it is sent.
@@ -322,6 +328,8 @@ fn onboard(name) {
 | `now()`, `now(format)`, `today()` | Local time: ISO 8601 with the offset, a strftime pattern (`"%d.%m.%Y"`), or `2026-11-05` |
 | `undo(\|\| …)`, `undo(label, \|\| …)` | Register a cleanup that isn't tied to a request (§8.1) |
 | `multipart(#{ … })` | A `multipart/form-data` body (§4.3) |
+| `form(#{ … })` | An `application/x-www-form-urlencoded` body (§4.3) |
+| `url_encode(x)` | `x` percent-encoded as one URL component (§4.3) |
 | `sse_parse(text)` | Server-sent events as `[#{event, data, id}]`. Responses with `text/event-stream` get them as `events` automatically |
 | `base64_encode`, `base64url_encode`, `base64_decode`, `base64_decode_blob` | |
 | `jwt_decode(token)` | `#{header, claims, signature}`, without verifying the signature |

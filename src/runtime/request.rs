@@ -1,6 +1,6 @@
 //! Request blocks at runtime: binding arguments, rendering, sending, expectations, captures.
 
-use super::builtins::{FileRef, Multipart, parse_sse};
+use super::builtins::{FileRef, Form, Multipart, parse_sse};
 use super::http::{self, Prepared, Received};
 use super::undo::UndoAction;
 use super::value::{self, RawText, map_of, to_json, to_text};
@@ -867,6 +867,9 @@ fn build(shared: &Rc<Shared>, engine: &Engine, body: &BodyRt, scope: &mut Scope)
                 let (bytes, ct) = m.encode(&boundary);
                 content_type = Some(ct);
                 Some(bytes)
+            } else if let Some(f) = v.read_lock::<Form>() {
+                content_type = Some("application/x-www-form-urlencoded".into());
+                Some(f.encode().into_bytes())
             } else if let Some(f) = v.read_lock::<FileRef>() {
                 content_type = Some(f.content_type.clone());
                 Some(f.bytes.clone())

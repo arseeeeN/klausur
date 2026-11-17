@@ -456,6 +456,12 @@ fn register_functions(engine: &mut Engine, shared: &Rc<Shared>) {
             .collect();
         RawText(segments.join("/"))
     });
+    // One value percent-encoded for building URLs or bodies by hand: everything except
+    // `A–Z a–z 0–9 - . _ ~`, like URL interpolations do. Not for `{{…}}` in URLs: that would encode twice.
+    engine.register_fn("url_encode", |v: Dynamic| {
+        percent_encoding::utf8_percent_encode(&value::to_text(&v), super::request::COMPONENT)
+            .to_string()
+    });
     let s = shared.clone();
     engine.register_fn("read_file", move |path: &str| read(&s, path));
     let s = shared.clone();

@@ -91,7 +91,9 @@ interpolated as the whole first word: `{{method}} {{base}}/x`. Redirects aren't 
 - `send { … }` / `send [ … ]`: JSON with interpolation (`Content-Type: application/json` unless set).
 - ```` send ``` … ``` ````: raw text with `{{…}}` as text, dedented to the closing fence.
 - `send = expr`: computed. Map/array → JSON; string → as is; blob → bytes;
-  `multipart(#{ field: "x", doc: file("a.pdf") })` → `multipart/form-data`; `file(path)` → raw
+  `multipart(#{ field: "x", doc: file("a.pdf") })` → `multipart/form-data`;
+  `form(#{ user: "x", tags: ["a", "b"] })` (0.6+) → `application/x-www-form-urlencoded`, like an
+  HTML form (arrays repeat the field, `()` leaves it out); `file(path)` → raw
   bytes with a guessed content type. `send = if a == () { #{…} } else { #{…} }` works.
 
 **`expect`**: one expression, or a block with one per line. In scope: `status`, `headers`
@@ -255,12 +257,13 @@ Hooks: `this.before(|ctx| …)`, `this.after(|ctx, result| …)` (`result.passed
 | `unique("alice")`, `unique()` (0.4+) | `alice-3f9c2a1b` / `3f9c2a1b`: data no other test uses. A suite's own `fn unique` replaces it |
 | `uuid()`, `sleep(ms)` | `sleep` is for pacing only; wait for conditions with `poll` |
 | `json(path)`, `csv(path)`, `read_file(path)`, `read_blob(path)` | Relative to the current file. `read_file` is exact (CRLF stays CRLF) and UTF-8 only; `read_blob` for bytes |
-| `file(path)`, `file_from(name, content[, type])`, `multipart(#{…})` | Upload bodies |
+| `file(path)`, `file_from(name, content[, type])`, `multipart(#{…})`, `form(#{…})` (0.6+) | Upload and form bodies |
 | `write_file(path, content)`, `remove_file(path)`, `file_exists(path)` | `write_file` returns the absolute path |
 | `write_file(path, content, undo: true)` (0.3+) | Also registers an undo that restores the earlier content, or removes a new file (0.5+: and the directories it created): the way to write fixture files |
 | `watch_file(path)` (0.3+) | `.lines()` (0.5+: complete lines only) / `.text()`: what was appended since, e.g. `expect !log.lines().some(\|l\| l.contains("ERROR"))` |
 | `now()`, `now("%d.%m.%Y")`, `today()` (0.3+) | Local time: ISO 8601, a strftime pattern, `2026-11-05` |
 | `raw(x)`, `url_path(x)` (0.3+) | Insert verbatim; insert a path into a URL |
+| `url_encode(x)` (0.6+) | Percent-encode one component, for text built by hand. Not inside `{{…}}` in a URL: that's encoded already |
 | `html_select(html, css)`, `xml_select(xml, css)` | `[#{tag, text, attrs, html}]` (`xml` for XML); `html` is the **outer** markup. 0.3+ adds `inner_html`/`outer_html` (`inner_xml`/`outer_xml`) |
 | `json_ld(html)` (0.3+) | Every JSON-LD script of a page, parsed (arrays flattened) |
 | `html_text(html)` | Visible text of a page |

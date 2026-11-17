@@ -65,7 +65,7 @@ test "names are kept as sent" (name in gen::string(1..20)) rollback runs(20) {
   generators with reproducible seeds.
 - **Modifiers you can write yourself.** `rollback`, `timeout`, `retries`, `parallel` and
   `poll` are built in, and your own are plain functions with `before`/`after`/`around` hooks.
-- **Helpers:** CSS selectors over HTML and XML, JSON-LD, JSONPath, multipart uploads, SSE, JWT,
+- **Helpers:** CSS selectors over HTML and XML, JSON-LD, JSONPath, form and multipart bodies, SSE, JWT,
   base64, regex, dates, fixture files that restore themselves, and watching a service's log for
   new errors.
 - **Browser tests** *(experimental)*: drive Chrome from the same tests, with an API modelled on

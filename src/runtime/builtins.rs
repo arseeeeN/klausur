@@ -69,6 +69,44 @@ impl Multipart {
     }
 }
 
+/// An `application/x-www-form-urlencoded` body built with `form(#{ … })`, like an HTML form
+/// posts it. Arrays become repeated fields, `()` leaves a field out.
+#[derive(Debug, Clone)]
+pub struct Form(pub Vec<(String, String)>);
+
+impl Form {
+    fn new(fields: Map) -> R<Form> {
+        let mut pairs = Vec::new();
+        for (name, value) in fields {
+            let values = match value.clone().try_cast::<Array>() {
+                Some(items) => items,
+                None => vec![value],
+            };
+            for v in values {
+                if v.is_unit() {
+                    continue;
+                }
+                if v.is::<FileRef>() || v.is_blob() {
+                    return Err(Failure::new(format!(
+                        "form field `{name}` is a file: a form can only send text, files need `multipart(…)`"
+                    ))
+                    .into_err());
+                }
+                pairs.push((name.to_string(), to_text(&v)));
+            }
+        }
+        Ok(Form(pairs))
+    }
+
+    pub fn encode(&self) -> String {
+        let mut out = url::form_urlencoded::Serializer::new(String::new());
+        for (name, value) in &self.0 {
+            out.append_pair(name, value);
+        }
+        out.finish()
+    }
+}
+
 fn escape(s: &str) -> String {
     s.replace('"', "%22")
         .replace('\r', "%0D")
@@ -326,6 +364,9 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
         .register_fn("to_string", |m: &mut Multipart| {
             format!("<multipart with {} fields>", m.0.len())
         });
+    engine
+        .register_type_with_name::<Form>("Form")
+        .register_fn("to_string", |f: &mut Form| f.encode());
 
     let s = shared.clone();
     engine.register_fn("file", move |path: &str| -> R<FileRef> {
@@ -363,6 +404,7 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
         parts.sort_by_key(|(_, v)| v.is::<FileRef>());
         Multipart(parts)
     });
+    engine.register_fn("form", Form::new);
     let s = shared.clone();
     engine.register_fn("read_blob", move |path: &str| -> R<Blob> {
         let full = s.resolve_path(path);
@@ -589,6 +631,38 @@ mod tests {
         let second = events[1].clone().cast::<Map>();
         assert_eq!(second["data"].to_string(), "hello\nworld");
         assert_eq!(second["id"].to_string(), "7");
+    }
+
+    #[test]
+    fn form_encodes_like_an_html_form() {
+        let mut fields = Map::new();
+        fields.insert("user".into(), "a b&c=d".into());
+        fields.insert(
+            "tags".into(),
+            Dynamic::from_array(vec!["x".into(), "ü".into()]),
+        );
+        fields.insert("left_out".into(), Dynamic::UNIT);
+        fields.insert("n".into(), Dynamic::from_int(3));
+        let form = Form::new(fields).unwrap();
+        assert_eq!(form.encode(), "n=3&tags=x&tags=%C3%BC&user=a+b%26c%3Dd");
+    }
+
+    #[test]
+    fn form_rejects_files() {
+        let mut fields = Map::new();
+        fields.insert(
+            "doc".into(),
+            Dynamic::from(FileRef {
+                name: "a.pdf".into(),
+                content_type: "application/pdf".into(),
+                bytes: vec![],
+            }),
+        );
+        let err = match *Form::new(fields).unwrap_err() {
+            EvalAltResult::ErrorRuntime(v, _) => v.cast::<Failure>().message,
+            other => other.to_string(),
+        };
+        assert!(err.contains("form field `doc` is a file"), "{err}");
     }
 
     #[test]

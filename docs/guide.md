@@ -84,6 +84,24 @@ let base = env("API_URL", "http://localhost:8080")
 - **Paths go through `url_path`.** Every interpolation after the first in a URL is encoded as
   one component, so `/` becomes `%2F`. For a value that is itself a path (a JCR node, a file),
   write `{{base}}/nodes{{url_path(node)}}`: each segment encoded, the slashes kept.
+- **Log in once, not on every request.** If every request takes about the same few hundred
+  milliseconds, even trivial ones, the server is probably checking a password each time:
+  Basic auth against a BCrypt-hashed password does that by design. Log in once in a top-level
+  `let` (lazy, so it runs once per run) and send the session cookie or token instead. In a
+  Magnolia suite this took a run from 56 s to 8 s. A form login looks like this:
+
+  ```
+  let session = login(env("APP_USER"), env("APP_PASSWORD")).session
+
+  @login(user, pass) {
+      connection { POST {{base}}/login }
+      send = form(#{ username: user, password: pass })
+      expect status == 302
+      let session = regex_captures(headers["set-cookie"], "SESSION=(?<v>[^;]*)").v
+  }
+  ```
+
+  Other requests then send `Cookie: SESSION={{session}}`.
 - **Slow endpoints get a timeout**, so a hang fails fast: `@chat(q) timeout("90s") { … }`.
 - **Background work is waited for with `poll`**, never with `sleep`:
   `@job(id) poll(until: body.state == "done", every: "500ms", within: "30s") { … }`. If the

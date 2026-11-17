@@ -1016,6 +1016,10 @@ fn builtins_for_real_services() {
     connection { POST {{base}}/echo/file }
     send = f
 }
+@postForm(fields) {
+    connection { POST {{base}}/echo/form }
+    send = form(fields)
+}
 
 test "null headers are left out" {
     expect !("authorization" in echoAuth().body.headers)
@@ -1032,6 +1036,18 @@ test "multipart" {
     expect body.contains("# hello")
     expect regex_find_all(body, `name="tags"`).len() == 2
     expect body.index_of(`name="url"`) < body.index_of(`name="file"`)
+}
+
+test "form" {
+    let r = postForm(#{ user: "a b", pass: "p&w=1%", tags: ["x", "y"], gone: () })
+    expect r.body.headers["content-type"] == "application/x-www-form-urlencoded"
+    expect r.body.body == "pass=p%26w%3D1%25&tags=x&tags=y&user=a+b"
+}
+
+test "url_encode" {
+    expect url_encode("a b/&ü") == "a%20b%2F%26%C3%BC"
+    expect url_encode("A-z0._~") == "A-z0._~"
+    expect url_encode(42) == "42"
 }
 
 test "send a file" {

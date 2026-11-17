@@ -91,6 +91,11 @@ The patterns that keep a suite trustworthy, and why:
   ``fn unique(p) { `${p}-${uuid().sub_string(0, 8)}` }`` in `lib.kl`): tests then can't see
   each other's records, even across runs.
 - **Wait with `poll`, never `sleep`**, for anything the service does in the background.
+- **Log in once per run, not per request.** If every request takes a similar few hundred ms,
+  even trivial reads, the server is likely checking a hashed password on each one (Basic auth
+  with BCrypt). Log in once in a top-level `let` (lazy: one evaluation per run) and send the
+  session cookie or token; a form login uses `send = form(#{ … })` (0.6+). Measure first:
+  compare one request with `curl -w "%{time_total}"` with and without the session.
 - **Name tests after the behaviour** ("a deactivated user can't log in"): the name is what the
   report and the user see.
 - **`parallel` only for tests that don't depend on global state** (counts, "the only one"); the
