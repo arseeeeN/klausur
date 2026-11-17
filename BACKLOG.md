@@ -182,3 +182,41 @@ buffered, which is what a test usually wants and what reports can show. Real str
 2. `spawn` and streams, with stop-on-undo: daemons and "wait until ready".
 3. Directory snapshots and golden files.
 4. Streaming pipes and open-file handles, only on demand.
+
+## Permissions (concept)
+
+Lets a run limit what scripts may do, for staging and prod runs, suites from other people, and
+security reviews. Modelled on Deno's `--allow-*` flags rather than WASI. Rhai has no I/O of its
+own, so a check in each registered function that touches the outside world can't be bypassed
+from a script. It's a policy, not a sandbox: it doesn't protect against bugs in klausur or its
+dependencies, and truly untrusted suites still belong in a container.
+
+| Capability | Covers today |
+|---|---|
+| `read` | `read_file`, `read_blob`, `file`, `file_from`, `file_exists`, `csv`, `watch_file`, `.env` loading |
+| `write` | `write_file`, `remove_file`, `screenshot` |
+| `env` | `env()`: reading tokens and sending them in a request is the classic exfiltration |
+| `net` | requests, websockets, the browser |
+| `exec` | `EXEC`, `exec()`, `spawn` (once they exist) |
+
+- **Allowed by default, except `exec`** (below). Usability comes first: the usual things work
+  without flags. `--deny-write`, `--deny-env`, … switch them off.
+- **Scoped allows:** `--allow-net=staging.example.com`, `--allow-write=./light-modules`,
+  `--allow-env=API_TOKEN`. Any scoped allow means "only these". A host allowlist mostly guards
+  against mistakes: a staging run can't hit prod because of a wrong variable.
+- **Profiles in a project config** (none exists yet), e.g. one per environment, so CI and prod
+  runs don't depend on someone typing the flags: `klausur test --profile prod`.
+- **Clear denials:** a denied call fails the test with ``write_file needs `write` (denied by
+  profile `prod`)``. It never silently does nothing.
+- **The browser** is a fixed program klausur chooses, so it counts as `net`, not `exec`. Holding
+  it to a host allowlist means intercepting its requests over CDP (`Fetch.enable`), which is a
+  project of its own.
+
+### `exec` is denied by default
+
+`exec` subsumes every other capability: with it, a script can `rm`, `cat ~/.ssh/…` or `curl`,
+so `--deny-write` means nothing while `exec` is allowed. So it starts denied, while the others
+stay allowed. It's one mechanism with a default per capability, not two systems: every
+capability takes both `--allow-x` and `--deny-x`, and a suite that uses `EXEC` turns it on once
+in its project config, so nobody types a flag. This has to ship together with `EXEC`: denying it
+later would break suites.
