@@ -2,11 +2,74 @@
 
 Ideas for what comes next.
 
-## Streaming assertions
+## Streaming HTTP responses
 
-SSE bodies are read completely before they're parsed, so the time to the first event can't be
-measured or asserted. Reading the stream as it arrives would allow `expect` on the first event's
-timing, and fits the stream type in the tools concept below.
+Right now a request returns only after the whole body has arrived; for `text/event-stream`, the
+events are then parsed into `r.events`. Tests can check which events came and in what order, but
+not when. A server that buffers the whole LLM answer and sends it in one go passes the same tests
+as one that sends tokens as they're generated. Seen with a chat endpoint that streams LLM answers.
+
+**SSE is a format, not only a GET.** The WHATWG standard defines two things: the
+`text/event-stream` format (`event:`/`data:`/`id:` lines, blank line between events), and the
+`EventSource` browser API, which can only send GET without custom headers and reconnects with
+`Last-Event-ID`. Chat and LLM APIs (OpenAI, Anthropic and others) answer a **POST** with a JSON
+body and a Bearer token with `text/event-stream`, which is valid. Browsers read it with `fetch`
+and a stream reader. So the useful feature is streaming any HTTP response, not an `SSE` verb.
+
+Opt in with a `stream` modifier on the request (reasons below), so existing requests keep their
+meaning:
+
+```
+@chatStream(message, jwt = ()) stream timeout("120s") {
+    connection {
+        POST {{base}}/api/chat/stream
+        Authorization: Bearer {{jwt}}
+        Accept: text/event-stream
+    }
+    send { "message": {{message}} }
+    expect status == 200                      // runs as soon as the headers are in
+}
+
+test "the answer streams" {
+    let r = chatStream("What is the vault code?")
+    let first = r.events.next(within: "5s")  // a stream, see "Streams" below
+    expect first.event == "config"
+    let done = r.events.wait_for(|e| e.event == "complete", within: "90s")
+    expect r.events.seen().filter(|e| e.event == "chat").len() > 1
+    expect done.at - first.at > 0             // ms since the request was sent
+}
+```
+
+- The call returns once the status and headers are there. `expect` and `let` in the block see
+  those; reading the body (`r.body`, `r.text`) waits for the end, so they keep working as before.
+- `r.events` for `text/event-stream`, `r.chunks` or `r.lines` for anything else (NDJSON, plain
+  chunked output). Each item carries `at`, the time since the request was sent, so the time to
+  the first byte or event can be checked.
+- `timeout` covers the whole stream, and every read has its own deadline; nothing blocks forever.
+- The connection closes when the handle goes out of scope, at the latest with the case's undo
+  scope. A read on a closed stream returns what's left, then `()`.
+- The report shows the events with their timestamps, like the response body now.
+- Options in parentheses, like `poll(...)`: `stream(reconnect: true)` for `EventSource`
+  behaviour (reconnecting with `Last-Event-ID`) if a test ever needs it, and maybe
+  `stream(first_within: "5s")` for the most common check, that the first event comes quickly.
+- `WS` (SPEC §4.6) builds on the same stream type for what it receives.
+
+**Why a modifier:**
+- *Not an `SSE` verb.* The verb in `connection` picks the protocol, and SSE is HTTP: an `SSE`
+  verb would take the method's place, so a streaming POST couldn't be written. The format is
+  already recognised by its `Content-Type`, without one verb per format. Drop `SSE` from the
+  future verbs (SPEC §4.2, `FUTURE_VERBS` in the parser), and have the parser answer `SSE` with
+  "SSE runs over HTTP: use GET or POST with the `stream` modifier". `WS` keeps its verb: after
+  the upgrade it isn't HTTP any more, and both sides send.
+- *Not automatic.* Returning every response after its headers would turn `r.events` from an
+  array into a handle (a Rhai array can't keep filling up while a test reads it), breaking
+  `events.len()` and `events[0]` in existing suites, and reports would have to read bodies to
+  the end that nobody looked at.
+- *Not at the call* (`chatStream(msg, stream: true)`): one request would return two different
+  types, and `stream` would collide with the request's own parameter names.
+- *On the request*, like `timeout`, `poll` and `cookies`: the request says what kind of exchange
+  it is, which matches practice (`@chat` and `@chatStream` are two endpoints anyway), and the
+  language server can tell from the definition that `r.events` is a stream.
 
 ## Browser end-to-end tests
 
@@ -130,7 +193,8 @@ leaves, and clean up. These are ideas to settle before building anything.
 ### Streams
 
 One type for everything that grows over time, so the same few methods work everywhere:
-`watch_file` (exists), a process's output, SSE and later WebSocket messages.
+`watch_file` (exists), a process's output, streamed HTTP responses (above) and later WebSocket
+messages.
 
 - `s.text()`, `s.lines()` (complete lines only, as `watch_file` now does), and
   `s.wait_for(|line| …, within: "5s")` for "wait until the server says it's ready".
