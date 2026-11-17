@@ -113,7 +113,7 @@ real screenshots or use several tabs.
 - **Getting a browser:** use a local Chrome, or download a pinned "Chrome for Testing" build.
 
 **Steps:**
-1. ~~Spike against the ai-search frontend: open, click, fill, text, wait, and a screenshot on
+1. ~~Spike against a SvelteKit frontend: open, click, fill, text, wait, and a screenshot on
    failure.~~ Done on the `browser-spike` branch (SPEC §14). What it showed:
    - The `headless_chrome` crate costs about 100 ms per protocol call: its WebSocket loop holds
      one lock around a read with a 100 ms timeout, and every write needs that lock. klausur now
