@@ -23,6 +23,10 @@ jobs:
           if [ "$tag" != "$crate" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $crate"; exit 1
           fi
+          plugin="$(jq -r .version editors/claude/.claude-plugin/plugin.json)"
+          if [ "$tag" != "$plugin" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the Claude Code plugin's version $plugin (editors/claude/.claude-plugin/plugin.json)"; exit 1
+          fi
           echo "version=$crate" >> "$GITHUB_OUTPUT"
 
   build:

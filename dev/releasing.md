@@ -8,10 +8,10 @@ Targets: Linux x86_64 and aarch64 (static musl builds), macOS arm64 and x86_64, 
 
 ## Cutting a release
 
-1. Bump `version` in `Cargo.toml` (and in `editors/tree-sitter-klausur/tree-sitter.json` and
-   `package.json` if the grammar changed), run `cargo test`, commit, and push to `main`.
+1. Bump `version` in `Cargo.toml` and in `editors/claude/.claude-plugin/plugin.json` (and in
+   `editors/tree-sitter-klausur/tree-sitter.json` and `package.json` if the grammar changed), run `cargo test`, commit, and push to `main`.
 2. Wait for CI to pass, then tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
-3. The workflow checks that the tag matches `Cargo.toml`, builds every target, and publishes
+3. The workflow checks that the tag matches `Cargo.toml` and the plugin's version, builds every target, and publishes
    the release with notes generated from the merged pull requests and commits.
 
 The repository must be public: the install scripts download from GitHub without logging in.
