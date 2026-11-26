@@ -3001,3 +3001,42 @@ test "two" { fail("must not run") }
         "{junit}"
     );
 }
+
+#[test]
+fn symlinks() {
+    let server = start();
+    let p = project(
+        "symlinks",
+        r#"
+test "a link to a file and to a folder" rollback {
+    write_file("data/secret.txt", "secret")
+    let link = symlink("../data/secret.txt", "served/escape.txt", undo: true)
+    expect is_symlink("served/escape.txt") && !is_symlink("data/secret.txt")
+    expect read_file("served/escape.txt") == "secret"
+    expect link.ends_with("escape.txt")
+    symlink("../data", "served/all", undo: true)
+    expect read_file("served/all/secret.txt") == "secret"
+}
+
+test "the undo removed the links, not the targets" {
+    expect !is_symlink("served/escape.txt") && !file_exists("served")
+    expect read_file("data/secret.txt") == "secret"
+}
+
+test "a dangling link is still a link" rollback {
+    symlink("nowhere.txt", "dangling.txt", undo: true)
+    expect is_symlink("dangling.txt") && !file_exists("dangling.txt")
+    expect remove_file("dangling.txt")
+}
+
+test "an existing path isn't replaced" {
+    write_file("taken.txt", "x")
+    symlink("data/secret.txt", "taken.txt")
+}
+"#,
+    );
+    let out = p.run(&server, &["test", "-j", "1"]);
+    let all = out.all();
+    assert!(all.contains("3 passed, 1 failed"), "{all}");
+    assert!(all.contains("something is there already"), "{all}");
+}

@@ -507,6 +507,43 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
             Ok(full.to_string_lossy().into_owned())
         },
     );
+    // `symlink(target, link)`: `link` resolves like every path, `target` is stored as written
+    // (relative targets are relative to the link's folder). With `undo: true` the undo removes
+    // the link, never what it points to, and the folders made for it.
+    let s = shared.clone();
+    engine.register_fn(
+        "symlink",
+        move |ncx: NativeCallContext, target: &str, link: &str| -> R<String> {
+            symlink_fn(&s, &ncx, target, link, false)
+        },
+    );
+    let s = shared.clone();
+    engine.register_fn(
+        "symlink__kw",
+        move |ncx: NativeCallContext, opts: rhai::Map| -> R<String> {
+            let mut opts = opts;
+            let (Some(target), Some(link)) = (opts.remove("_0"), opts.remove("_1")) else {
+                return Err(Failure::new("`symlink` needs a target and a link").into_err());
+            };
+            let undo = match opts.remove("undo") {
+                None => false,
+                Some(v) => v.as_bool().map_err(|_| {
+                    Failure::new("`symlink`'s `undo` takes true or false").into_err()
+                })?,
+            };
+            if let Some(k) = opts.keys().next() {
+                return Err(Failure::new(format!("`symlink` takes `undo`, not `{k}`")).into_err());
+            }
+            symlink_fn(&s, &ncx, &target.to_string(), &link.to_string(), undo)
+        },
+    );
+    let s = shared.clone();
+    engine.register_fn("is_symlink", move |ncx: NativeCallContext, path: &str| {
+        s.at_call(&ncx, || s.resolve_path(path))
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+    });
+
     // Local date and time: `now()` is ISO 8601 with the offset, `now("%d.%m.%Y")` uses strftime
     // patterns, `today()` is `2026-11-05`.
     engine.register_fn("now", || {
@@ -542,7 +579,7 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
         "remove_file",
         move |ncx: NativeCallContext, path: &str| -> R<bool> {
             let full = s.at_call(&ncx, || s.resolve_path(path));
-            match std::fs::remove_file(&full) {
+            match remove_link_or_file(&full) {
                 Ok(()) => Ok(true),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
                 Err(e) => {
@@ -642,6 +679,117 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
             Ok(regex(pattern)?.replace_all(text, with).into_owned())
         },
     );
+}
+
+fn symlink_fn(
+    s: &Rc<Shared>,
+    ncx: &NativeCallContext,
+    target: &str,
+    link: &str,
+    undo: bool,
+) -> R<String> {
+    let full = s.at_call(ncx, || s.resolve_path(link));
+    if full.symlink_metadata().is_ok() {
+        return Err(Failure::new(format!(
+            "can't create the symlink {}: something is there already",
+            full.display()
+        ))
+        .into_err());
+    }
+    // The directories this creates, innermost first, for the undo to remove again.
+    let created: Vec<std::path::PathBuf> = full
+        .ancestors()
+        .skip(1)
+        .take_while(|d| !d.as_os_str().is_empty() && !d.exists())
+        .map(|d| d.to_path_buf())
+        .collect();
+    if let Some(dir) = full.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| Failure::new(format!("can't create {}: {e}", dir.display())).into_err())?;
+    }
+    make_symlink(target, &full).map_err(|e| {
+        Failure::new(format!(
+            "can't create the symlink {} → {target}: {e}",
+            full.display()
+        ))
+        .into_err()
+    })?;
+    // Not canonicalized: that would follow the link.
+    let full = match (full.parent(), full.file_name()) {
+        (Some(dir), Some(name)) => dunce::canonicalize(dir)
+            .map(|d| d.join(name))
+            .unwrap_or(full),
+        _ => full,
+    };
+    if undo {
+        let link = full.clone();
+        let restore: Rc<dyn Fn() -> Result<(), String>> = Rc::new(move || {
+            match remove_link_or_file(&link) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                r => r.map_err(|e| format!("can't remove {}: {e}", link.display()))?,
+            }
+            for dir in &created {
+                if std::fs::remove_dir(dir).is_err() {
+                    break;
+                }
+            }
+            Ok(())
+        });
+        let span = ncx
+            .call_source()
+            .and_then(|src| s.map_pos(src, ncx.call_position()));
+        let label = format!("remove the symlink {}", full.display());
+        super::undo::register_native(s, label, restore, span);
+    }
+    Ok(full.to_string_lossy().into_owned())
+}
+
+#[cfg(unix)]
+fn make_symlink(target: &str, link: &std::path::Path) -> Result<(), String> {
+    std::os::unix::fs::symlink(target, link).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn make_symlink(target: &str, link: &std::path::Path) -> Result<(), String> {
+    // Windows has separate links for files and folders. A relative target is relative to the
+    // link's folder; a target that doesn't exist (yet) gets a file link.
+    let resolved = match link.parent() {
+        Some(dir) => dir.join(target),
+        None => std::path::PathBuf::from(target),
+    };
+    let result = if resolved.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    };
+    result.map_err(|e| {
+        // ERROR_PRIVILEGE_NOT_HELD
+        if e.raw_os_error() == Some(1314) {
+            "creating symlinks on Windows needs Developer Mode or admin rights".to_string()
+        } else {
+            e.to_string()
+        }
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn make_symlink(_: &str, _: &std::path::Path) -> Result<(), String> {
+    Err("symlinks aren't supported on this platform".into())
+}
+
+/// Remove a file or a symlink. On Windows a link to a folder is removed as a folder.
+fn remove_link_or_file(path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e)
+            if cfg!(windows)
+                && path
+                    .symlink_metadata()
+                    .is_ok_and(|m| m.file_type().is_symlink()) =>
+        {
+            std::fs::remove_dir(path).map_err(|_| e)
+        }
+        r => r,
+    }
 }
 
 #[cfg(test)]
