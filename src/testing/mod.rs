@@ -507,6 +507,68 @@ pub struct CaseSpec {
     pub generated: bool,
 }
 
+/// A case as plain data, for sending to a parallel worker, so the worker doesn't evaluate the
+/// test's case sources again (they may send requests, and their answers may differ).
+pub struct WireCase {
+    args: Vec<(String, serde_json::Value)>,
+    label: Option<String>,
+    seed: u64,
+    generated: bool,
+}
+
+impl CaseSpec {
+    /// `None` when an argument isn't plain data (a closure, a blob, a file): such values can't
+    /// leave this thread, so the worker builds the cases itself.
+    pub fn to_wire(&self) -> Option<WireCase> {
+        let args = self
+            .args
+            .iter()
+            .map(|(k, v)| Some((k.clone(), plain_json(v)?)))
+            .collect::<Option<Vec<_>>>()?;
+        Some(WireCase {
+            args,
+            label: self.label.clone(),
+            seed: self.seed,
+            generated: self.generated,
+        })
+    }
+}
+
+impl WireCase {
+    pub fn into_spec(self) -> CaseSpec {
+        CaseSpec {
+            args: self
+                .args
+                .into_iter()
+                .map(|(k, v)| (k, value::from_json(&v)))
+                .collect(),
+            label: self.label,
+            seed: self.seed,
+            generated: self.generated,
+        }
+    }
+}
+
+/// JSON for values that come back unchanged from it: no closures, blobs, chars or custom types.
+fn plain_json(v: &Dynamic) -> Option<serde_json::Value> {
+    fn plain(v: &Dynamic) -> bool {
+        if v.is_unit() || v.is_bool() || v.is_int() || v.is_float() || v.is_string() {
+            return true;
+        }
+        if let Some(a) = v.read_lock::<Array>() {
+            return a.iter().all(plain);
+        }
+        if let Some(m) = v.read_lock::<Map>() {
+            return m.values().all(plain);
+        }
+        false
+    }
+    if !plain(v) {
+        return None;
+    }
+    value::to_json(v).ok()
+}
+
 enum Source {
     Values(Vec<Dynamic>),
     Gen(Gen),

@@ -174,6 +174,7 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
         env,
         config: opts.config,
         cur_dir: RefCell::new(std::env::current_dir().unwrap_or_default()),
+        call_site: RefCell::default(),
         rng: Rng::new(opts.seed),
         callables: RefCell::new(symbols.keys().cloned().collect()),
         browser: Rc::default(),
@@ -971,7 +972,7 @@ impl Compiler<'_> {
         fns: &HashMap<String, FnDecl>,
     ) -> Option<TestRt> {
         let errors = self.diags.len();
-        let params = t
+        let params: Vec<TestParamRt> = t
             .params
             .iter()
             .map(|p| TestParamRt {
@@ -992,6 +993,15 @@ impl Compiler<'_> {
         if self.diags.len() > errors {
             return None;
         }
+        // Closures in `cases` rows and parameter sources are functions of the unit that built
+        // them; the case runs in other units, so those need them too.
+        let sources: Vec<usize> = params
+            .iter()
+            .filter_map(|p| p.source)
+            .chain(cases)
+            .collect();
+        let users = [body_unit, modifiers, label];
+        self.share_functions(&sources, users.iter().flatten().copied());
         Some(TestRt {
             name: t.name.clone(),
             file,
@@ -1001,6 +1011,26 @@ impl Compiler<'_> {
             label,
             body: body_unit?,
         })
+    }
+
+    /// Give the `to` units the script functions (closures included) of the `from` units.
+    fn share_functions(&mut self, from: &[usize], to: impl Iterator<Item = usize>) {
+        let mut units = self.shared.units.borrow_mut();
+        let fns: Vec<rhai::AST> = from
+            .iter()
+            .map(|&id| units[id].ast.clone_functions_only())
+            .filter(|ast| ast.iter_functions().next().is_some())
+            .collect();
+        if fns.is_empty() {
+            return;
+        }
+        for id in to {
+            let unit = Rc::get_mut(&mut units[id]).expect("units are shared only after loading");
+            for f in &fns {
+                unit.ast.combine(f.clone());
+            }
+            unit.ast.set_source(format!("u{id}"));
+        }
     }
 
     /// `rollback runs(200) as_user("admin")` → `t.__layer(0); t.rollback(); t.__layer(1); …`

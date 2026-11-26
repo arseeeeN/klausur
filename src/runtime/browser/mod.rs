@@ -17,7 +17,7 @@ use super::{Failure, PageReport, Shared};
 use cdp::Connection;
 use locator::Locator;
 use page::{Page, PageInner, Routes, Timeouts, WaitUntil};
-use rhai::{Array, Dynamic, Engine, EvalAltResult, Map};
+use rhai::{Array, Dynamic, Engine, EvalAltResult, Map, NativeCallContext};
 use route::{Action, Route};
 use serde_json::json;
 use std::cell::{Cell, RefCell};
@@ -708,8 +708,23 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     element_fn!("uncheck", |l, s| l.set_checked(s, false));
     element_fn!("select", |l, s, values: Dynamic| l
         .select(s, strings(&values, "`select`'s options")?));
-    element_fn!("upload", |l, s, files: Dynamic| l
-        .upload(s, strings(&files, "`upload`'s files")?));
+    // Not through `element_fn!`: file paths resolve against the file the call is written in.
+    let sh = shared.clone();
+    engine.register_fn(
+        "upload",
+        move |ncx: NativeCallContext, l: &mut Locator, files: Dynamic| -> R<()> {
+            let files = strings(&files, "`upload`'s files")?;
+            sh.at_call(&ncx, || l.upload(&sh, files))
+        },
+    );
+    let sh = shared.clone();
+    engine.register_fn(
+        "upload",
+        move |ncx: NativeCallContext, p: &mut Page, sel: &str, files: Dynamic| -> R<()> {
+            let files = strings(&files, "`upload`'s files")?;
+            sh.at_call(&ncx, || Locator::css(p, sel).upload(&sh, files))
+        },
+    );
     element_fn!("wait", |l, s| l.wait(s, "visible"));
     element_fn!("text", |l, s| l.text(s));
     element_fn!("value", |l, s| l.value(s));
@@ -777,27 +792,42 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     });
     let s = shared.clone();
-    engine.register_fn("screenshot", move |p: &mut Page, path: &str| -> R<String> {
-        p.screenshot_to(&s.resolve_path(path))
-            .map(|p| p.display().to_string())
-            .map_err(|e| fail(format!("couldn't save a screenshot to {path}: {e}")))
-    });
+    engine.register_fn(
+        "screenshot",
+        move |ncx: NativeCallContext, p: &mut Page, path: &str| -> R<String> {
+            p.screenshot_to(&s.at_call(&ncx, || s.resolve_path(path)))
+                .map(|p| p.display().to_string())
+                .map_err(|e| fail(format!("couldn't save a screenshot to {path}: {e}")))
+        },
+    );
     engine.register_fn("close", |p: &mut Page| p.close());
 
     // --- Network --------------------------------------------------------------------------
     let s = shared.clone();
     engine.register_fn(
         "route",
-        move |p: &mut Page, glob: &str, response: Dynamic| -> R<()> {
-            add_route(&p.0.routes, glob, route_action(&s, &response)?);
+        move |ncx: NativeCallContext, p: &mut Page, glob: &str, response: Dynamic| -> R<()> {
+            add_route(
+                &p.0.routes,
+                glob,
+                s.at_call(&ncx, || route_action(&s, &response))?,
+            );
             p.sync_routes()
         },
     );
     let s = shared.clone();
     engine.register_fn(
         "route",
-        move |b: &mut BrowserHandle, glob: &str, response: Dynamic| -> R<()> {
-            add_route(&b.0.routes, glob, route_action(&s, &response)?);
+        move |ncx: NativeCallContext,
+              b: &mut BrowserHandle,
+              glob: &str,
+              response: Dynamic|
+              -> R<()> {
+            add_route(
+                &b.0.routes,
+                glob,
+                s.at_call(&ncx, || route_action(&s, &response))?,
+            );
             for page in b.0.pages.borrow().iter().filter(|p| !p.0.closed.get()) {
                 page.sync_routes()?;
             }

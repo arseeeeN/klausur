@@ -369,19 +369,23 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
         .register_fn("to_string", |f: &mut Form| f.encode());
 
     let s = shared.clone();
-    engine.register_fn("file", move |path: &str| -> R<FileRef> {
-        let full = s.resolve_path(path);
-        let bytes = std::fs::read(&full)
-            .map_err(|e| Failure::new(format!("can't read {}: {e}", full.display())).into_err())?;
-        let name = full
-            .file_name()
-            .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
-        Ok(FileRef {
-            content_type: guess_content_type(&name).into(),
-            name,
-            bytes,
-        })
-    });
+    engine.register_fn(
+        "file",
+        move |ncx: NativeCallContext, path: &str| -> R<FileRef> {
+            let full = s.at_call(&ncx, || s.resolve_path(path));
+            let bytes = std::fs::read(&full).map_err(|e| {
+                Failure::new(format!("can't read {}: {e}", full.display())).into_err()
+            })?;
+            let name = full
+                .file_name()
+                .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+            Ok(FileRef {
+                content_type: guess_content_type(&name).into(),
+                name,
+                bytes,
+            })
+        },
+    );
     engine.register_fn("file_from", |name: &str, content: Dynamic| FileRef {
         name: name.to_string(),
         content_type: guess_content_type(name).into(),
@@ -406,18 +410,21 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     });
     engine.register_fn("form", Form::new);
     let s = shared.clone();
-    engine.register_fn("read_blob", move |path: &str| -> R<Blob> {
-        let full = s.resolve_path(path);
-        std::fs::read(&full)
-            .map_err(|e| Failure::new(format!("can't read {}: {e}", full.display())).into_err())
-    });
+    engine.register_fn(
+        "read_blob",
+        move |ncx: NativeCallContext, path: &str| -> R<Blob> {
+            let full = s.at_call(&ncx, || s.resolve_path(path));
+            std::fs::read(&full)
+                .map_err(|e| Failure::new(format!("can't read {}: {e}", full.display())).into_err())
+        },
+    );
 
     // Writing files, e.g. into a folder a service watches. Both return the absolute path.
     let s = shared.clone();
     engine.register_fn(
         "write_file",
-        move |path: &str, content: Dynamic| -> R<String> {
-            let full = s.resolve_path(path);
+        move |ncx: NativeCallContext, path: &str, content: Dynamic| -> R<String> {
+            let full = s.at_call(&ncx, || s.resolve_path(path));
             if let Some(dir) = full.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| {
                     Failure::new(format!("can't create {}: {e}", dir.display())).into_err()
@@ -451,7 +458,7 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
                     Failure::new(format!("`write_file` takes `undo`, not `{k}`")).into_err(),
                 );
             }
-            let full = s.resolve_path(&path.to_string());
+            let full = s.at_call(&ncx, || s.resolve_path(&path.to_string()));
             let before = std::fs::read(&full).ok();
             // The directories this creates, innermost first, for the undo to remove again.
             let created: Vec<std::path::PathBuf> = full
@@ -511,8 +518,8 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     });
     engine.register_type_with_name::<FileWatch>("file_watch");
     let s = shared.clone();
-    engine.register_fn("watch_file", move |path: &str| {
-        let path = s.resolve_path(path);
+    engine.register_fn("watch_file", move |ncx: NativeCallContext, path: &str| {
+        let path = s.at_call(&ncx, || s.resolve_path(path));
         let start = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         FileWatch { path, start }
     });
@@ -531,17 +538,22 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
             .collect())
     });
     let s = shared.clone();
-    engine.register_fn("remove_file", move |path: &str| -> R<bool> {
-        let full = s.resolve_path(path);
-        match std::fs::remove_file(&full) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(Failure::new(format!("can't remove {}: {e}", full.display())).into_err()),
-        }
-    });
+    engine.register_fn(
+        "remove_file",
+        move |ncx: NativeCallContext, path: &str| -> R<bool> {
+            let full = s.at_call(&ncx, || s.resolve_path(path));
+            match std::fs::remove_file(&full) {
+                Ok(()) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(e) => {
+                    Err(Failure::new(format!("can't remove {}: {e}", full.display())).into_err())
+                }
+            }
+        },
+    );
     let s = shared.clone();
-    engine.register_fn("file_exists", move |path: &str| {
-        s.resolve_path(path).exists()
+    engine.register_fn("file_exists", move |ncx: NativeCallContext, path: &str| {
+        s.at_call(&ncx, || s.resolve_path(path)).exists()
     });
 
     // Rhai's `trim`, `sort` and `reverse` change the value in place and return `()`, so

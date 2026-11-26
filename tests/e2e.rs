@@ -2786,3 +2786,106 @@ test "it fails when it never holds long enough" { neverSettles("c") }
     // It never held twice in a row, so there is no longest streak to report.
     assert!(!out.stdout.contains("at most"), "{}", out.all());
 }
+
+#[test]
+fn helpers_read_files_relative_to_their_own_file() {
+    let server = start();
+    let p = Project::new("helper-paths");
+    p.file(
+        "lib/helpers.kl",
+        r#"
+fn fixture(name) { read_file(`fixtures/${name}`) }
+fn fixture_json(name) { json(`fixtures/${name}`) }
+fn fixture_csv(name) { csv(`fixtures/${name}`) }
+fn fixture_exists(name) { file_exists(`fixtures/${name}`) }
+fn apply(f) { f.call() }
+"#,
+    );
+    p.file("lib/fixtures/a.txt", "from lib");
+    p.file("lib/fixtures/a.json", r#"{"from": "lib"}"#);
+    p.file("lib/fixtures/a.csv", "from\nlib\n");
+    // Same name next to the test, so resolving against the wrong file reads the wrong content.
+    p.file("suite/sub/fixtures/a.txt", "from test");
+    p.file(
+        "suite/sub/t.test.kl",
+        r#"
+import "../../lib/helpers.kl"
+
+test "a helper reads its own fixtures" {
+    expect fixture("a.txt") == "from lib"
+    expect fixture_json("a.json").from == "lib"
+    expect fixture_csv("a.csv")[0].from == "lib"
+    expect fixture_exists("a.json")
+}
+
+test "the test reads its own" {
+    expect read_file("fixtures/a.txt") == "from test"
+    expect !file_exists("fixtures/a.json")
+}
+
+test "a closure reads relative to where it's written" {
+    expect apply(|| read_file("fixtures/a.txt")) == "from test"
+}
+"#,
+    );
+    let out = p.run(&server, &["test", "suite"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+}
+
+#[test]
+fn closures_in_case_tables_can_be_called() {
+    let server = start();
+    let p = project(
+        "case-closures",
+        r#"
+fn twice(f, x) { f.call(f.call(x)) }
+
+fn checks_rule() {
+    this.before(|ctx| { ctx.checked = ctx.args.rule.call(1) })
+}
+
+test "rows carry closures" (name, rule, want) cases [
+    #{ name: "add", rule: |x| x + 1, want: 3 },
+    #{ name: "double", rule: |x| x * 2, want: 4 },
+] checks_rule() {
+    expect rule.call(2) == want
+    expect twice(rule, 1) > 1
+    expect ctx().checked == rule.call(1)
+}
+
+test "sources can be closures too" (f in [|x| x - 1, |x| x * 10]) parallel {
+    expect f.call(5) == 4 || f.call(5) == 50
+}
+"#,
+    );
+    let out = p.run(&server, &["test", "-j", "2"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("4 passed"), "{}", out.all());
+}
+
+#[test]
+fn parallel_workers_run_the_planned_cases() {
+    let server = start();
+    let p = project(
+        "planned-cases",
+        r#"
+@poll(key) {
+    connection { GET {{base}}/jobs/{{key}}?after=1000 }
+}
+
+// Each call answers with a higher count, so a worker that built the cases again would get
+// other values than the plan.
+fn plan() {
+    let n = poll("planned").body.polls
+    [n, n + 1, n + 2, n + 3]
+}
+
+test "cases come from the plan" (x in plan()) parallel {
+    expect x >= 1 && x <= 4
+}
+"#,
+    );
+    let out = p.run(&server, &["test", "-j", "3"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("4 passed"), "{}", out.all());
+}

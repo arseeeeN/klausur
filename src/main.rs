@@ -632,6 +632,7 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
                 case_idx,
                 parallel: true,
                 group,
+                spec,
                 ..
             } => {
                 while run.in_flight >= jobs || run.group_full(&group) {
@@ -644,7 +645,10 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
                     continue;
                 }
                 let values = run.values(test.file);
-                run.send(seq, file, test.file, test_idx, case_idx, group, values);
+                let spec = spec.as_ref().and_then(testing::CaseSpec::to_wire);
+                run.send(
+                    seq, file, test.file, test_idx, case_idx, group, values, spec,
+                );
             }
             Step::Case {
                 file,
@@ -792,6 +796,7 @@ impl Schedule<'_, '_> {
         case: usize,
         group: Option<(String, usize)>,
         values: Arc<Vec<(String, serde_json::Value)>>,
+        spec: Option<testing::WireCase>,
     ) {
         if let Some(pool) = &self.pool {
             self.files.insert(seq, (file, file_id));
@@ -804,6 +809,7 @@ impl Schedule<'_, '_> {
                 test,
                 case,
                 values,
+                spec,
             });
             self.in_flight += 1;
         }

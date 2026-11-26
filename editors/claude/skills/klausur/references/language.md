@@ -256,7 +256,7 @@ Hooks: `this.before(|ctx| …)`, `this.after(|ctx, result| …)` (`result.passed
 | `fail(msg)` | Fail now |
 | `unique("alice")`, `unique()` (0.4+) | `alice-3f9c2a1b` / `3f9c2a1b`: data no other test uses. A suite's own `fn unique` replaces it |
 | `uuid()`, `sleep(ms)` | `sleep` is for pacing only; wait for conditions with `poll` |
-| `json(path)`, `csv(path)`, `read_file(path)`, `read_blob(path)` | Relative to the current file. `read_file` is exact (CRLF stays CRLF) and UTF-8 only; `read_blob` for bytes |
+| `json(path)`, `csv(path)`, `read_file(path)`, `read_blob(path)` | Relative to the file the call is written in, so a helper reads its own fixtures; the same for every built-in that takes a path. `read_file` is exact (CRLF stays CRLF) and UTF-8 only; `read_blob` for bytes |
 | `file(path)`, `file_from(name, content[, type])`, `multipart(#{…})`, `form(#{…})` (0.6+) | Upload and form bodies |
 | `write_file(path, content)`, `remove_file(path)`, `file_exists(path)` | `write_file` returns the absolute path |
 | `write_file(path, content, undo: true)` (0.3+) | Also registers an undo that restores the earlier content, or removes a new file (0.5+: and the directories it created): the way to write fixture files |

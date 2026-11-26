@@ -32,6 +32,14 @@ pub struct Unit {
     pub file: FileId,
 }
 
+/// Where a built-in was called from: the Rhai source (`lib` or `u<id>`), the position, and the
+/// built-in's name.
+pub struct CallSite {
+    pub source: String,
+    pub pos: Position,
+    pub name: String,
+}
+
 pub struct GlobalVar {
     pub unit: usize,
     pub span: Span,
@@ -159,6 +167,10 @@ pub struct Shared {
     pub env: Env,
     pub config: Config,
     pub cur_dir: RefCell<PathBuf>,
+    /// The call a path-taking built-in is running for (source and position), so relative paths
+    /// resolve against the file the call is written in, e.g. a helper in `lib.kl` reads its own
+    /// fixtures whichever test calls it. See [`Shared::at_call`].
+    pub call_site: RefCell<Option<CallSite>>,
     /// Randomness for code outside test cases.
     pub rng: Rng,
     /// Names of all requests and functions, for suggestions.
@@ -178,14 +190,70 @@ impl Shared {
         self.units.borrow()[id].clone()
     }
 
-    /// Resolve a path relative to the file whose code is running.
+    /// Resolve a path relative to the file the call is written in (see [`Shared::at_call`]),
+    /// or else the file whose code is running.
     pub fn resolve_path(&self, path: &str) -> PathBuf {
         let p = std::path::Path::new(path);
         if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            self.cur_dir.borrow().join(p)
+            return p.to_path_buf();
         }
+        let call_dir = self.call_site.borrow().as_ref().and_then(|c| {
+            let file = self.call_file(c)?;
+            Some(
+                self.sources
+                    .get(file)
+                    .path
+                    .parent()
+                    .map(|d| d.to_path_buf())
+                    .unwrap_or_default(),
+            )
+        });
+        call_dir
+            .unwrap_or_else(|| self.cur_dir.borrow().clone())
+            .join(p)
+    }
+
+    /// The file a built-in's call is written in. Rhai calls closures without switching the
+    /// source, so a closure from a test that a helper calls reports the helper's source with
+    /// the closure's position; when the code there isn't this call, find the code where it is.
+    fn call_file(&self, c: &CallSite) -> Option<FileId> {
+        let in_lib = || {
+            let lib = self.lib_code.borrow();
+            lib.calls_at(c.pos, &c.name)
+                .then(|| lib.map_position(c.pos))?
+        };
+        let in_unit = |u: &Rc<Unit>| {
+            u.code
+                .calls_at(c.pos, &c.name)
+                .then(|| u.code.map_position(c.pos))?
+        };
+        let units = self.units.borrow();
+        let named = if c.source == "lib" {
+            in_lib()
+        } else {
+            c.source
+                .strip_prefix('u')
+                .and_then(|id| id.parse::<usize>().ok())
+                .and_then(|id| units.get(id))
+                .and_then(in_unit)
+        };
+        named
+            .or_else(|| units.iter().find_map(in_unit))
+            .or_else(in_lib)
+            .map(|span| span.file)
+    }
+
+    /// Run a built-in with relative paths resolved against the file its call is written in.
+    pub fn at_call<T>(&self, ncx: &rhai::NativeCallContext, f: impl FnOnce() -> T) -> T {
+        let site = ncx.call_source().map(|s| CallSite {
+            source: s.to_string(),
+            pos: ncx.call_position(),
+            name: ncx.fn_name().to_string(),
+        });
+        let prev = self.call_site.replace(site);
+        let result = f();
+        self.call_site.replace(prev);
+        result
     }
 
     /// Run `f` with relative paths resolved against `file`'s directory.

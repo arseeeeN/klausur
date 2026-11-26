@@ -21,6 +21,8 @@ pub struct Job {
     pub case: usize,
     /// `setup let` values of the test's file.
     pub values: Arc<Vec<(String, serde_json::Value)>>,
+    /// The case as planned; without it (its arguments aren't plain data), the worker builds it.
+    pub spec: Option<testing::WireCase>,
 }
 
 pub struct Pool {
@@ -74,7 +76,8 @@ impl Drop for Pool {
 
 struct Test {
     def: TestDef,
-    cases: Vec<Option<CaseSpec>>,
+    /// Built only when a job comes without its case.
+    cases: Option<Result<Vec<Option<CaseSpec>>, Failure>>,
 }
 
 fn worker(
@@ -87,7 +90,7 @@ fn worker(
     let program = load::load(paths, opts).ok();
     let mut tests: HashMap<usize, Result<Test, Failure>> = HashMap::new();
     loop {
-        let job = match jobs.lock() {
+        let mut job = match jobs.lock() {
             Ok(rx) => match rx.recv() {
                 Ok(job) => job,
                 Err(_) => return,
@@ -96,7 +99,7 @@ fn worker(
         };
         let result = match &program {
             Some(program) => {
-                std::panic::catch_unwind(AssertUnwindSafe(|| run(program, &mut tests, &job, seed)))
+                std::panic::catch_unwind(AssertUnwindSafe(|| run(program, &mut tests, &mut job, seed)))
                     .unwrap_or_else(|panic| {
                         let why = panic
                             .downcast_ref::<String>()
@@ -124,7 +127,7 @@ fn worker(
 fn run(
     program: &Program,
     tests: &mut HashMap<usize, Result<Test, Failure>>,
-    job: &Job,
+    job: &mut Job,
     seed: u64,
 ) -> CaseResult {
     let shared = &program.shared;
@@ -133,17 +136,24 @@ fn run(
     let test = &program.tests[job.test];
     let entry = tests.entry(job.test).or_insert_with(|| {
         let def = testing::build_def(shared, engine, test)?;
-        let cases = testing::expand_cases(shared, engine, test, &def.0.borrow(), seed)?;
-        Ok(Test {
-            def,
-            cases: cases.into_iter().map(Some).collect(),
-        })
+        Ok(Test { def, cases: None })
     });
     let t = match entry {
         Ok(t) => t,
         Err(f) => return failed(program, job.test, f.clone()),
     };
-    let Some(spec) = t.cases.get_mut(job.case).and_then(Option::take) else {
+    if let Some(wire) = job.spec.take() {
+        return testing::run_case(shared, engine, test, &t.def.0.borrow(), wire.into_spec());
+    }
+    let cases = t.cases.get_or_insert_with(|| {
+        testing::expand_cases(shared, engine, test, &t.def.0.borrow(), seed)
+            .map(|c| c.into_iter().map(Some).collect())
+    });
+    let cases = match cases {
+        Ok(c) => c,
+        Err(f) => return failed(program, job.test, f.clone()),
+    };
+    let Some(spec) = cases.get_mut(job.case).and_then(Option::take) else {
         return failed(
             program,
             job.test,

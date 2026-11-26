@@ -69,7 +69,7 @@ Every element method exists on locators and, with a selector first, on pages:
 | `press(key)` | Focuses it and presses `"Enter"`, `"a"`, `"Shift+Tab"`, `"Control+a"` | attached |
 | `check()`, `uncheck()` | Clicks a checkbox/radio unless already in that state | visible, enabled, still, not covered |
 | `select(v)` | Selects `<select>` options by value or label (string or array); returns values | visible, enabled, options present |
-| `upload(path)` | Sets an `<input type=file>`'s files (path or array, relative to the test file) | attached |
+| `upload(path)` | Sets an `<input type=file>`'s files (path or array, relative to the file the call is in) | attached |
 | `wait()` / `wait(state: "hidden")` | States: `visible` (default), `hidden`, `attached`, `detached` | in that state |
 | `text()` | Rendered text (`innerText`), trimmed | attached |
 | `value()` | An input's/textarea's/select's value | attached |

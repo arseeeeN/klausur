@@ -8,7 +8,7 @@ use super::{Ctx, CtxData, Failure, Shared};
 use crate::testing::generators;
 use rhai::{
     AST, Array, Dynamic, Engine, EvalAltResult, EvalContext, Expr, Expression, FnPtr,
-    ImmutableString, Map, Position, Scope,
+    ImmutableString, Map, NativeCallContext, Position, Scope,
 };
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -463,34 +463,42 @@ fn register_functions(engine: &mut Engine, shared: &Rc<Shared>) {
             .to_string()
     });
     let s = shared.clone();
-    engine.register_fn("read_file", move |path: &str| read(&s, path));
-    let s = shared.clone();
-    engine.register_fn("json", move |path: &str| -> R<Dynamic> {
-        let text = read_data(&s, path)?;
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| Failure::new(format!("{path} isn't valid JSON: {e}")).into_err())?;
-        Ok(value::from_json(&json))
+    engine.register_fn("read_file", move |ncx: NativeCallContext, path: &str| {
+        s.at_call(&ncx, || read(&s, path))
     });
     let s = shared.clone();
-    engine.register_fn("csv", move |path: &str| -> R<Array> {
-        let text = read_data(&s, path)?;
-        let mut reader = csv::Reader::from_reader(text.as_bytes());
-        let headers = reader
-            .headers()
-            .map_err(|e| Failure::new(format!("{path}: {e}")).into_err())?
-            .clone();
-        let mut rows = Array::new();
-        for record in reader.records() {
-            let record = record.map_err(|e| Failure::new(format!("{path}: {e}")).into_err())?;
-            let row: Map = headers
-                .iter()
-                .zip(record.iter())
-                .map(|(k, v)| (k.into(), csv_value(v)))
-                .collect();
-            rows.push(row.into());
-        }
-        Ok(rows)
-    });
+    engine.register_fn(
+        "json",
+        move |ncx: NativeCallContext, path: &str| -> R<Dynamic> {
+            let text = s.at_call(&ncx, || read_data(&s, path))?;
+            let json: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| Failure::new(format!("{path} isn't valid JSON: {e}")).into_err())?;
+            Ok(value::from_json(&json))
+        },
+    );
+    let s = shared.clone();
+    engine.register_fn(
+        "csv",
+        move |ncx: NativeCallContext, path: &str| -> R<Array> {
+            let text = s.at_call(&ncx, || read_data(&s, path))?;
+            let mut reader = csv::Reader::from_reader(text.as_bytes());
+            let headers = reader
+                .headers()
+                .map_err(|e| Failure::new(format!("{path}: {e}")).into_err())?
+                .clone();
+            let mut rows = Array::new();
+            for record in reader.records() {
+                let record = record.map_err(|e| Failure::new(format!("{path}: {e}")).into_err())?;
+                let row: Map = headers
+                    .iter()
+                    .zip(record.iter())
+                    .map(|(k, v)| (k.into(), csv_value(v)))
+                    .collect();
+                rows.push(row.into());
+            }
+            Ok(rows)
+        },
+    );
     for (name, kind) in [
         ("scoped", ScopeKind::Scoped),
         ("transaction", ScopeKind::Transaction),

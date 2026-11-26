@@ -312,7 +312,7 @@ fn onboard(name) {
 |---|---|
 | `env(name)`, `env(name, default)` | Environment variable (§9); fails if unset and no default |
 | `raw(x)` | Insert verbatim into templates (§4.3) |
-| `json(path)`, `csv(path)`, `read_file(path)` | Read files relative to the current file. CSV rows become maps, with numbers and booleans converted. `json` and `csv` skip a UTF-8 byte order mark; `read_file` returns the text exactly (line endings included) and must be UTF-8 |
+| `json(path)`, `csv(path)`, `read_file(path)` | Read files relative to the file the call is written in: a helper in `lib.kl` reads its own fixtures, whichever test calls it. The same goes for every built-in that takes a path (`file`, `read_blob`, `write_file`, `remove_file`, `file_exists`, `watch_file`, and in browser tests `upload`, `screenshot` and a route's `path`). CSV rows become maps, with numbers and booleans converted. `json` and `csv` skip a UTF-8 byte order mark; `read_file` returns the text exactly (line endings included) and must be UTF-8 |
 | `scoped(\|\| …)`, `transaction(\|\| …)` | Undo scopes (§8.2) |
 | `ctx()` | The running case's context (§7.1). Lets hooks hand values to the test body |
 | `log(x)`, `print(x)` | Add to the case log, shown on failure or with `-v`. Maps and arrays are shown as JSON, here and in `${…}` |
@@ -361,9 +361,14 @@ parameter sources the test declares.
   their values (the cartesian product).
 - **Tables:** `(user, pass, ok) cases [ #{…}, #{…} ]`. Each row is one case.
   `cases csv("file.csv")` and `cases json("file.json")` load rows from a file. Each row must
-  have exactly the parameters that have no `in` source.
+  have exactly the parameters that have no `in` source. Rows may hold closures
+  (`rule: |path| …`), for values that depend on something only the case knows.
 - **Generators:** `(name in gen::string(1..64))`. The test samples `runs(n)`
   times. When combined with lists, it takes n samples per combination.
+- **When sources run:** `in` sources and `cases` tables are evaluated once, when the run is
+  planned, so they may call requests (`(call in protected_calls())`). Parallel workers run the
+  planned cases rather than evaluating the sources again. If a source fails, only its test is
+  reported as an error.
 
 ```
 test "login" (user, pass, ok) cases [
@@ -983,7 +988,7 @@ is `page.locator(sel).click()`.
 | `press(key)` | Focus it and press a key: `"Enter"`, `"a"`, `"Shift+Tab"`, `"Control+a"` | attached |
 | `check()`, `uncheck()` | Click a checkbox or radio button unless it already is in that state | visible, enabled, still, not covered |
 | `select(v)` | Select options of a `<select>` by value or label (a string or an array); returns the values | visible, enabled, the options |
-| `upload(path)` | Set the files of an `<input type="file">` (a path or an array, relative to the test file) | attached |
+| `upload(path)` | Set the files of an `<input type="file">` (a path or an array, relative to the file the call is written in) | attached |
 | `wait()` | Wait for `state:` `"visible"` (default), `"hidden"`, `"attached"` or `"detached"` | the state |
 | `text()` | Its rendered text (`innerText`), trimmed | attached |
 | `value()` | The value of an input, textarea or select | attached |
@@ -1015,7 +1020,7 @@ is `page.locator(sel).click()`.
 | `route(glob, response)` | Answer matching requests (see below); also on `browser()`, for all its pages |
 | `unroute(glob)` | Remove the routes for a glob |
 | `accept_dialogs()` | Accept dialogs from now on |
-| `screenshot(path)` | Save a PNG, relative to the test file |
+| `screenshot(path)` | Save a PNG, relative to the file the call is written in |
 | `close()` | Close the page early |
 
 `goto` and `eval`, Playwright's names, are reserved words in Rhai, hence `navigate` and
@@ -1043,7 +1048,7 @@ browser().route("http://app.test/**", #{ path: "fixtures/site/index.html" })
 ```
 
 - A response is `#{ status, headers, content_type, json | body | path }`: `status` defaults to
-  200, `json` sets `application/json`, `path` reads a file (relative to the test file) and
+  200, `json` sets `application/json`, `path` reads a file (relative to the file the `route` call is written in) and
   guesses its type. `"abort"` makes the request fail as a network error.
 - The route added last wins, and a page's routes come before its browser's, as in Playwright.
 - Playwright's route handlers are callbacks; klausur's are fixed responses. Chrome holds a

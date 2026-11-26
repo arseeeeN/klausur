@@ -166,6 +166,22 @@ impl CodeBuilder {
         (inside && in_segment).then_some(span)
     }
 
+    /// Whether the generated code at `pos` is a call to `name`. Rhai reports a closure's
+    /// position with the source of the function that called it, so a position can belong to
+    /// another unit's code; this tells them apart.
+    pub fn calls_at(&self, pos: rhai::Position, name: &str) -> bool {
+        let Some(offset) = self.gen_offset(pos) else {
+            return false;
+        };
+        // Rhai points at the function name, or at the `.` of a method call.
+        let start = offset.min(self.text.len());
+        let rest = &self.text[start..];
+        rest.starts_with(name)
+            || rest
+                .strip_prefix('.')
+                .is_some_and(|r| r.trim_start().starts_with(name))
+    }
+
     fn gen_offset(&self, pos: rhai::Position) -> Option<usize> {
         let (line, col) = (pos.line()?, pos.position()?);
         let mut offset = 0;
