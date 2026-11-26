@@ -3130,3 +3130,25 @@ fn run_evaluates_expressions() {
     assert_eq!(out.code, 1, "{}", out.all());
     assert!(out.all().contains("<-e>"), "{}", out.all());
 }
+
+#[test]
+fn a_setup_let_as_case_source_explains_why() {
+    let server = start();
+    let p = project(
+        "setup-let-source",
+        r#"
+setup let items = [1, 2]
+test "uses it as a source" (x in items) { expect x > 0 }
+test "uses it in the body" { expect items.len() == 2 }
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    let all = out.all().replace("\n  | ", " ");
+    assert_eq!(out.code, 1, "{all}");
+    assert!(all.contains("`items` isn't set yet"), "{all}");
+    assert!(
+        all.contains("case sources (`in …`, `cases`) are evaluated earlier"),
+        "{all}"
+    );
+    assert!(all.contains("1 passed, 1 failed"), "{all}");
+}

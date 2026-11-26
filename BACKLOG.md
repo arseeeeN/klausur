@@ -71,12 +71,6 @@ test "the answer streams" {
   it is, which matches practice (`@chat` and `@chatStream` are two endpoints anyway), and the
   language server can tell from the definition that `r.events` is a stream.
 
-## Smaller language and runner items
-
-- **A `setup let` value as a case source** fails with "`items` is set by `setup` in …, which
-  runs only before the tests of that file", even when the test is in that file. The real reason
-  is that sources run when the run is planned, before any `setup`; the message should say so.
-
 ## Browser end-to-end tests
 
 Drive a real browser from klausur tests, so a test can set up data with requests, check it in

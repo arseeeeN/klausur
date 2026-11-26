@@ -623,6 +623,19 @@ pub fn expand_cases(
     def: &DefData,
     base_seed: u64,
 ) -> Result<Vec<CaseSpec>, Failure> {
+    shared.planning.set(true);
+    let cases = plan_cases(shared, engine, test, def, base_seed);
+    shared.planning.set(false);
+    cases
+}
+
+fn plan_cases(
+    shared: &Rc<Shared>,
+    engine: &Engine,
+    test: &TestRt,
+    def: &DefData,
+    base_seed: u64,
+) -> Result<Vec<CaseSpec>, Failure> {
     let mut sources: Vec<(usize, Source)> = Vec::new();
     for (i, p) in test.params.iter().enumerate() {
         let Some(unit) = p.source else { continue };

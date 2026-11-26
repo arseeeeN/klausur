@@ -191,6 +191,7 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
         page_reads: Cell::new(0),
         requests_sent: Cell::new(0),
         expect_window: Cell::new(None),
+        planning: Cell::new(false),
     });
     let mut engine = engine::build(&shared);
     testing::register(&mut engine, &shared);

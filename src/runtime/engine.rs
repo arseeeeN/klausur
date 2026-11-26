@@ -277,12 +277,22 @@ pub fn global(shared: &Rc<Shared>, engine: &Engine, name: &str) -> R<Option<Dyna
             return Ok(Some(v.clone()));
         }
         if let Some(file) = g.setup {
-            let file = shared.sources.get(file).name.clone();
-            return Err(Failure::new(format!(
-                "`{name}` is set by `setup` in {file}, which runs only before the tests of that file"
-            ))
-            .at(g.span)
-            .into_err());
+            let file_name = shared.sources.get(file).name.clone();
+            // Read by a case source (`in`, `cases`): those run when the run is planned, before
+            // any setup.
+            let message = if shared.planning.get() {
+                format!(
+                    "`{name}` isn't set yet: `setup` sets it before the first case of \
+                     {file_name}, but case sources (`in …`, `cases`) are evaluated earlier, \
+                     when the run is planned"
+                )
+            } else {
+                format!(
+                    "`{name}` is set by `setup` in {file_name}, which runs only before the tests \
+                     of that file"
+                )
+            };
+            return Err(Failure::new(message).at(g.span).into_err());
         }
         if g.evaluating {
             return Err(Failure::new(format!("`{name}` depends on itself"))

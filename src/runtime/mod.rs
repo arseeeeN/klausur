@@ -186,6 +186,8 @@ pub struct Shared {
     pub requests_sent: Cell<u64>,
     /// While `expect` retries, page waits end with its window rather than their own timeout.
     pub expect_window: Cell<Option<Instant>>,
+    /// While a test's case sources (`in …`, `cases`) are evaluated, before any `setup` ran.
+    pub planning: Cell<bool>,
 }
 
 impl Shared {
