@@ -752,7 +752,10 @@ fn make_symlink(target: &str, link: &std::path::Path) -> Result<(), String> {
 #[cfg(windows)]
 fn make_symlink(target: &str, link: &std::path::Path) -> Result<(), String> {
     // Windows has separate links for files and folders. A relative target is relative to the
-    // link's folder; a target that doesn't exist (yet) gets a file link.
+    // link's folder; a target that doesn't exist (yet) gets a file link. The link stores the
+    // target as text, and Windows doesn't resolve `/` in it, so tests can write `../data/x`.
+    let target = target.replace('/', "\\");
+    let target = target.as_str();
     let resolved = match link.parent() {
         Some(dir) => dir.join(target),
         None => std::path::PathBuf::from(target),
