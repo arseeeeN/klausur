@@ -71,6 +71,21 @@ test "the answer streams" {
   it is, which matches practice (`@chat` and `@chatStream` are two endpoints anyway), and the
   language server can tell from the definition that `r.events` is a stream.
 
+## Smaller language and runner items
+
+- **`skip(reason)` at run time**, from a test body or a `before` hook, for tests whose subject
+  depends on how the server runs (a startup flag the API doesn't expose). The case is reported
+  as skipped, not as a pass that checked something else; undo still runs, `retries` doesn't
+  retry it. Today `skip` is only a modifier, and in a body it's "`skip` isn't defined".
+- **Sampling a behaviour N times** while chasing a flaky ordering, without throwaway test files:
+  document that `runs(n)` repeats any test (not only generated ones), add `klausur test --runs N`,
+  and `klausur run -e '<expr>' file.kl`, which evaluates an expression with that file's imports
+  loaded.
+- **`last_index_of`** for arrays and strings.
+- **Docs:** `extract` and the other working Rhai array helpers in `language.md`; cases built
+  from requests (`(x in some_request())`) in SPEC §6.1 and `language.md`: when the source runs,
+  and that a failure there errors only that test.
+
 ## Browser end-to-end tests
 
 Drive a real browser from klausur tests, so a test can set up data with requests, check it in
@@ -215,6 +230,12 @@ buffered, which is what a test usually wants and what reports can show. Real str
   with a flag, like other snapshot test tools.
 - Open files with read/write positions: only if a real case needs them; whole-file reads,
   `watch_file` streams and temp dirs cover what tool tests usually do.
+- **`symlink(target, link)`**, with an undo that removes the link, not the target: for testing
+  that a server won't follow a link out of a folder it serves (a classic file-download hole).
+  On Windows creating one needs developer mode or admin rights, so it should fail with a clear
+  message there. It could also be done with `exec`, but only with a different command per
+  platform (`ln -s` vs. `mklink`), which is a general problem of `exec`: see the platform
+  quirks below. Worth discussing whether `exec` needs per-platform syntax or helpers.
 - `write_file(…, atomic: true)`: write a temporary file and rename it over the target, for
   folders a service watches that could otherwise read a half-written file. Not the default:
   renaming fails on Docker single-file bind mounts and on Windows while the file is open.
