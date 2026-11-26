@@ -7,6 +7,14 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    # src/runtime/query.rs implements selectors' traits for scraper's types, so selectors and
+    # cssparser must be the versions scraper builds on; a newer one alone doesn't compile. When a
+    # scraper update needs newer ones, its PR fails, and they're bumped by hand in that PR.
+    ignore:
+      - dependency-name: selectors
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: cssparser
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
