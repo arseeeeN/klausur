@@ -225,10 +225,10 @@ Between the parameters and `{`, applied outside-in (the first wraps the others):
 | `rollback` | Run the case in an undo scope: everything it registered is undone at the end |
 | `timeout("30s")` | Whole case, hooks included |
 | `retries(n)` | Up to n extra attempts |
-| `runs(n)` | Samples for generator parameters |
+| `runs(n)` | Samples for generator parameters; without generators (0.8+), runs each case n times and reports "k of n runs failed" |
 | `seed(n)` | Fixed seed for this test |
 | `tags(["slow", "ui"])` | An **array**; `--tag ui` runs only tagged tests |
-| `skip("reason")` | Report as skipped |
+| `skip("reason")` | Report as skipped. 0.8+: also a function, `skip("why")` in a body, a hook or a file's `setup`, for skipping at run time (e.g. the server runs in another mode); `try` can't catch it |
 | `only` | Run only `only` tests |
 | `label(expr)` | Case name in the report, e.g. `label(name)` or ``label(`${role} on ${path}`)`` |
 | `parallel` | May overlap with other `parallel` cases (`-j N`, default 4) |
@@ -286,6 +286,7 @@ Hooks: `this.before(|ctx| …)`, `this.after(|ctx, result| …)` (`result.passed
 | `file(path)`, `file_from(name, content[, type])`, `multipart(#{…})`, `form(#{…})` (0.6+) | Upload and form bodies |
 | `write_file(path, content)`, `remove_file(path)`, `file_exists(path)` | `write_file` returns the absolute path |
 | `write_file(path, content, undo: true)` (0.3+) | Also registers an undo that restores the earlier content, or removes a new file (0.5+: and the directories it created): the way to write fixture files |
+| `symlink(target, link, undo: true)`, `is_symlink(path)` (0.8+) | A symlink at `link` to `target` as written (relative to the link's folder); the undo removes only the link. Windows needs Developer Mode or admin rights |
 | `watch_file(path)` (0.3+) | `.lines()` (0.5+: complete lines only) / `.text()`: what was appended since, e.g. `expect !log.lines().some(\|l\| l.contains("ERROR"))` |
 | `now()`, `now("%d.%m.%Y")`, `today()` (0.3+) | Local time: ISO 8601, a strftime pattern, `2026-11-05` |
 | `raw(x)`, `url_path(x)` (0.3+) | Insert verbatim; insert a path into a URL |
@@ -307,7 +308,9 @@ klausur test [paths…] ["name filter"…] [--tag T] [--case k=v|label] [--seed 
              [-j N] [-v] [--timeout SECS] [--env NAME] [--on-dirty=abort|continue] [--headed]
              [--fail-fast] [--junit FILE] [--watch]   # 0.4+: stop early; JUnit XML; rerun on change
              [--skip-tag T]                           # 0.5+: leave out tests with a tag
+             [--runs N]                               # 0.8+: every case N times, "k of N failed"
 klausur run file.kl[#name] [-a k=v …] [-q] [--env NAME] [--headed]
+klausur run -e '<expr>' [-n N] [paths]   # 0.8+: evaluate with the suite's requests; -n counts results
 klausur list [paths…]
 klausur update                           # 0.4+: replace klausur with the latest release
 klausur init [dir] [--auth basic|bearer] # 0.4+: a suite to start from (src/test/klausur)

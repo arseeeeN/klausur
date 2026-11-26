@@ -324,6 +324,8 @@ fn onboard(name) {
 | `file(path)`, `file_from(name, content[, type])`, `read_blob(path)` | Files to upload; the content type is guessed from the name |
 | `write_file(path, content)`, `remove_file(path)`, `file_exists(path)` | `content` is a string or a blob, and missing folders are created. `write_file` returns the absolute path. `remove_file` returns whether the file existed |
 | `write_file(path, content, undo: true)` | Also registers an undo that puts back what was there: the earlier content, or no file (and none of the directories it created) |
+| `symlink(target, link)`, `symlink(target, link, undo: true)`, `is_symlink(path)` | A symbolic link at `link`, pointing to `target` exactly as written (a relative target is relative to the link's folder). Fails if something is at `link` already. The undo removes the link, never the target, and the folders it created. On Windows it makes a file or folder link depending on the target, and needs Developer Mode or admin rights. `file_exists` follows links; `remove_file` removes the link |
+| `skip()`, `skip(reason)` | End the case as skipped, e.g. when the server runs in a mode the test doesn't apply to. `try`/`catch` can't intercept it; undo runs as usual, `retries` doesn't repeat it, `after` hooks see `result.skipped`, and `--fail-fast` ignores it. In a file's `setup`, it skips all of the file's tests with that reason |
 | `watch_file(path)` | Remembers how long a file is; `.text()` returns what was appended since (from the start if the file was rotated), `.lines()` its complete, non-empty lines (not a line still being written). For "no new errors in the service's log" |
 | `now()`, `now(format)`, `today()` | Local time: ISO 8601 with the offset, a strftime pattern (`"%d.%m.%Y"`), or `2026-11-05` |
 | `undo(\|\| …)`, `undo(label, \|\| …)` | Register a cleanup that isn't tied to a request (§8.1) |
@@ -501,10 +503,12 @@ These are implemented in Rust on top of the same API:
   hooks included. In-flight requests are cut off when time runs out; the cleanup that
   follows isn't.
 - `retries(n)`: up to `n` extra attempts
-- `runs(n)`
+- `runs(n)`: samples for generator parameters; without generators, runs each case `n` times
+  and reports it once, with how many runs failed (like `--runs`, §10)
 - `seed(n)`
 - `tags(…)`
-- `skip("reason")`
+- `skip("reason")`. As a function, `skip()` / `skip("reason")` also skips at run time, from a
+  body, a hook or a file's `setup` (§7.2)
 - `only`
 - `label(expr)`: names each case in the report (§6.3)
 - `parallel`: the test's cases may run at the same time as other `parallel` cases (§7.4)
@@ -819,8 +823,9 @@ should grow beyond dotenv, e.g. with per-environment base URLs.)*
 
 ```
 klausur run  <file>[#name] [-a k=v ...] [--env NAME] [--timeout SECS] [-q] [--headed]
+klausur run  -e <expr> [-n N] [paths] [--env NAME] [--timeout SECS] [-q] [--headed]
 klausur test [paths/filters] [--seed N] [--case k=v|label] [--tag T] [--on-dirty=abort|continue] [--env NAME] [--timeout SECS] [-j N] [-v] [--headed]
-             [--fail-fast] [--junit FILE] [--watch] [--skip-tag T]
+             [--fail-fast] [--junit FILE] [--watch] [--skip-tag T] [--runs N]
 klausur list [paths]
 klausur update
 klausur init [DIR] [--auth basic|bearer]
@@ -835,6 +840,14 @@ klausur fmt  [paths]                           # post-v1
   - The response body or return value goes to **stdout**, so
     `klausur run api.kl#getUser -a id=1 | jq` works.
   - Without `#name`, it runs the file's only request, or lists the choices.
+  - **`run -e <expr>`** evaluates an expression or statements with the requests and functions
+    of the given files or folder (default: the current folder), compiled like a test body as
+    the source `<-e>`: `klausur run -e 'search(q: "x").body.total' src/test/klausur`. Relative
+    paths resolve against the working directory. Each evaluation runs in an undo scope of its
+    own, so `undo: true` and request `undo`s clean up after it.
+  - **`-n N`** evaluates it N times and counts identical results, most frequent first, with
+    errors counted too (`27× ["a","b"]`, `3× ["b","a"]`). For finding out how often a flaky
+    behaviour happens, without throwaway test files.
 - **`test`** treats arguments that are existing paths as files or directories (searched
   recursively for `*.kl`), and every other argument as a test-name filter (substring). It
   defaults to the current directory. Only tests from the given files run; tests in
@@ -844,7 +857,9 @@ klausur fmt  [paths]                           # post-v1
   `--junit FILE` also writes a JUnit XML report (one `<testsuite>` per file, failures with
   the same text as the terminal, dirty cases as failures); `--watch` runs again whenever
   something in the test folders changes (not `klausur-results/`, hidden or editor swap files),
-  until Ctrl-C.
+  until Ctrl-C; `--runs N` runs every selected case N times (overriding `runs(n)`) and reports
+  each case once: `✗ "ordering is stable" — 3 of 30 runs failed`, with the first failing run in
+  full under Failures. JUnit gets one test case per case.
 - **`list`** shows the requests (with signatures and protocol lines), functions and tests.
 - **`init`** creates a suite to start from in `DIR` (default `src/test/klausur`): `api.kl` with
   a placeholder `BASE_URL` and an example request, `lib.kl`, an example test, a README and a

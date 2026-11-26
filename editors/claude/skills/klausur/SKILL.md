@@ -116,7 +116,13 @@ klausur test <suite-dir> --fail-fast     # 0.4+: stop at the first failure (long
 # Not `--watch`: it reruns on every change and never exits, so a tool call would hang. It's
 # for people writing tests; suggest it to the user instead.
 klausur run <suite-dir>/api.kl#createUser -a name=alice   # one request, body to stdout
+klausur test <suite-dir> "name" --runs 30                 # 0.8+: how often does it fail?
+klausur run -e 'expr using the suite' -n 30 <suite-dir>   # 0.8+: count the distinct results
 ```
+
+For a flaky test, measure before changing anything: `--runs 30` reports "k of 30 runs
+failed" with the first failure in full, and `run -e … -n 30` counts the distinct answers of a
+call, so no throwaway probe files in the suite.
 
 For CI, add `--junit klausur-report.xml` (0.4+): GitLab and Jenkins show the results, failures
 with their source line and values, from that file. The guide's CI section has a GitLab job:

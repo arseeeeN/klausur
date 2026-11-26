@@ -200,6 +200,11 @@ test "roles" (role, can_delete) cases [
   use `retries(1)` sparingly. `log(…)` what the service said, so a failure shows it.
 - **A test for a known bug** stays in the suite: `skip("BUG-123: …")` until it's fixed, so the
   report keeps listing it.
+- **A test that only applies in one server mode** (a startup flag, a feature toggle) checks the
+  mode and calls `skip("…")` at run time, rather than branching its assertions: the report then
+  says it didn't run, instead of showing a pass that checked something else.
+- **Flaky?** `--runs 30` says how often a test fails, and `klausur run -e '…' -n 30` how often
+  each answer comes back.
 
 ### Browser tests
 
@@ -260,6 +265,9 @@ klausur test src/test/klausur/users.test.kl       # one file
 klausur test src/test/klausur "deactivat"         # tests whose name contains this
 klausur test src/test/klausur --case role=user    # only matching cases
 klausur test src/test/klausur --seed 1234         # replay generated values
+klausur test src/test/klausur "ordering" --runs 30   # how often does a flaky test fail?
+klausur run -e 'search(q: "x").body.hits.map(|h| h.id)' -n 30 src/test/klausur
+                                                  # count the distinct answers of 30 calls
 klausur test src/test/klausur -v                  # logs and the request trace of every test
 klausur test src/test/klausur --tag ui --headed   # tagged tests, with a visible browser
 klausur list src/test/klausur                     # requests, functions and tests

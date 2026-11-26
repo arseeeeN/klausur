@@ -73,18 +73,9 @@ test "the answer streams" {
 
 ## Smaller language and runner items
 
-- **`skip(reason)` at run time**, from a test body or a `before` hook, for tests whose subject
-  depends on how the server runs (a startup flag the API doesn't expose). The case is reported
-  as skipped, not as a pass that checked something else; undo still runs, `retries` doesn't
-  retry it. Today `skip` is only a modifier, and in a body it's "`skip` isn't defined".
-- **Sampling a behaviour N times** while chasing a flaky ordering, without throwaway test files:
-  document that `runs(n)` repeats any test (not only generated ones), add `klausur test --runs N`,
-  and `klausur run -e '<expr>' file.kl`, which evaluates an expression with that file's imports
-  loaded.
-- **`last_index_of`** for arrays and strings.
-- **Docs:** `extract` and the other working Rhai array helpers in `language.md`; cases built
-  from requests (`(x in some_request())`) in SPEC §6.1 and `language.md`: when the source runs,
-  and that a failure there errors only that test.
+- **A `setup let` value as a case source** fails with "`items` is set by `setup` in …, which
+  runs only before the tests of that file", even when the test is in that file. The real reason
+  is that sources run when the run is planned, before any `setup`; the message should say so.
 
 ## Browser end-to-end tests
 
@@ -230,12 +221,6 @@ buffered, which is what a test usually wants and what reports can show. Real str
   with a flag, like other snapshot test tools.
 - Open files with read/write positions: only if a real case needs them; whole-file reads,
   `watch_file` streams and temp dirs cover what tool tests usually do.
-- **`symlink(target, link)`**, with an undo that removes the link, not the target: for testing
-  that a server won't follow a link out of a folder it serves (a classic file-download hole).
-  On Windows creating one needs developer mode or admin rights, so it should fail with a clear
-  message there. It could also be done with `exec`, but only with a different command per
-  platform (`ln -s` vs. `mklink`), which is a general problem of `exec`: see the platform
-  quirks below. Worth discussing whether `exec` needs per-platform syntax or helpers.
 - `write_file(…, atomic: true)`: write a temporary file and rename it over the target, for
   folders a service watches that could otherwise read a half-written file. Not the default:
   renaming fails on Docker single-file bind mounts and on Windows while the file is open.
@@ -258,6 +243,9 @@ buffered, which is what a test usually wants and what reports can show. Real str
   decoded lossily, `stdout_blob` has the bytes.
 - **Timestamps:** mtime granularity differs (ext4 nanoseconds, HFS+ 1 s, FAT 2 s); a tool that
   checks "has this changed?" by mtime may miss a change written within the same second.
+- **Commands differ per platform** (`ln -s` vs. `mklink`, `cp` vs. `copy`): `exec` needs a
+  way to say which command runs where, as syntax or as helpers. To be specified with `exec`;
+  `symlink` became a built-in for this reason.
 - **Also:** symlinks need privileges on Windows, paths over 260 characters on Windows,
   environment variable names are case-insensitive on Windows, no executable bit on Windows.
 
