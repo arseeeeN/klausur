@@ -753,6 +753,8 @@ struct FileFixture {
     started: bool,
     torn_down: bool,
     failed: bool,
+    /// The setup called `skip(reason)`: the file's tests are skipped with this reason.
+    skip_reason: Option<String>,
     /// Tests already reported as not run because the setup failed.
     not_run: HashSet<String>,
     fixture: testing::fixture::Fixture,
@@ -838,6 +840,7 @@ impl Schedule<'_, '_> {
                 self.seed,
             );
             f.failed = result.outcome.is_err();
+            f.skip_reason = result.skipped().map(str::to_string);
             f.values = Arc::new(fixture.values.clone());
             f.fixture = fixture;
             let failed = f.failed;
@@ -852,7 +855,11 @@ impl Schedule<'_, '_> {
             return true;
         }
         let d = if f.not_run.insert(test.name.clone()) {
-            Done::Skipped(file.to_string(), test.name.clone(), "setup failed".into())
+            let reason = f
+                .skip_reason
+                .clone()
+                .unwrap_or_else(|| "setup failed".into());
+            Done::Skipped(file.to_string(), test.name.clone(), reason)
         } else {
             Done::Silent
         };
@@ -949,7 +956,7 @@ impl Schedule<'_, '_> {
             self.stopped = true;
         }
         let failed = match &d {
-            Done::Case(_, r) | Done::Fixture(_, r) => r.outcome.is_err(),
+            Done::Case(_, r) | Done::Fixture(_, r) => r.failed(),
             Done::Error(..) => true,
             Done::Skipped(..) | Done::Silent => false,
         };

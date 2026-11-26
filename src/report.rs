@@ -338,6 +338,23 @@ impl<'a> Reporter<'a> {
     }
 
     pub fn case(&mut self, file: &str, result: CaseResult) {
+        if let Some(reason) = result.skipped() {
+            let reason = reason.to_string();
+            self.skipped(file, &result.label(), &reason);
+            if self.verbose {
+                for line in &result.logs {
+                    println!("      {}", dim(line));
+                }
+            }
+            if !result.dirty.is_empty() {
+                // A cleanup still failed: that's reported like any other dirty case.
+                self.summary.dirty += 1;
+                for d in &result.dirty {
+                    self.dirty.push((result.label(), self.seed, d.clone()));
+                }
+            }
+            return;
+        }
         self.file(file);
         self.generated |= result.generated;
         let time = dim(format!("({})", humantime(result.duration)));
@@ -397,7 +414,7 @@ impl<'a> Reporter<'a> {
                 };
             }
         }
-        if result.outcome.is_err() {
+        if result.failed() {
             self.failures.push(result);
         }
     }
@@ -488,6 +505,16 @@ impl<'a> Reporter<'a> {
     /// A file's `setup` or `teardown`: one quiet line when it went well, otherwise reported
     /// like a case.
     pub fn fixture(&mut self, file: &str, result: CaseResult) {
+        // A setup that called `skip`: its tests are each reported as skipped, so it isn't counted.
+        if let (Some(reason), true) = (result.skipped(), result.dirty.is_empty()) {
+            self.file(file);
+            println!(
+                "  {} {}",
+                yellow("○"),
+                dim(format!("{} skipped the file — {reason}", result.test))
+            );
+            return;
+        }
         if result.outcome.is_err() || !result.dirty.is_empty() {
             return self.case(file, result);
         }

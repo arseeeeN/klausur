@@ -2913,3 +2913,91 @@ test "arrays by value or closure" {
     let out = p.run(&server, &["test"]);
     assert_eq!(out.code, 0, "{}", out.all());
 }
+
+#[test]
+fn skip_at_run_time() {
+    let server = start();
+    let p = project(
+        "runtime-skip",
+        r#"
+fn needs_flag() {
+    this.before(|ctx| { if env("FLAG", "") == "" { skip("FLAG isn't set") } })
+}
+
+fn report() {
+    this.after(|ctx, result| { ctx.log(`after: passed=${result.passed} skipped=${result.skipped}`) })
+}
+
+test "from the body" report() {
+    log("before the skip")
+    skip("the server runs in the other mode")
+    fail("must not run")
+}
+
+test "try can't catch it" {
+    try { skip("really") } catch (e) { fail("caught") }
+}
+
+test "from a before hook" needs_flag() {
+    fail("must not run")
+}
+
+test "undo still runs" rollback {
+    write_file("undone.txt", "x", undo: true)
+    skip()
+}
+
+test "and isn't retried" retries(3) {
+    log("attempt")
+    skip("once is enough")
+}
+
+test "per case" (n in [1, 2, 3]) {
+    if n == 2 { skip("two is skipped") }
+    expect n != 2
+}
+
+test "after the others" {
+    expect !file_exists("undone.txt")
+}
+"#,
+    );
+    p.file(
+        "skipped.test.kl",
+        r#"
+setup {
+    write_file("setup-marker.txt", "x", undo: true)
+    skip("not configured here")
+}
+test "one" { fail("must not run") }
+test "two" { fail("must not run") }
+"#,
+    );
+    let out = p.run(&server, &["test", "-v", "-j", "1", "--junit", "report.xml"]);
+    let all = out.all();
+    assert_eq!(out.code, 0, "{all}");
+    for line in [
+        "from the body — the server runs in the other mode",
+        "try can't catch it — really",
+        "from a before hook — FLAG isn't set",
+        "and isn't retried — once is enough",
+        "per case [n=2] — two is skipped",
+        "one — not configured here",
+        "two — not configured here",
+        "after: passed=false skipped=the server runs in the other mode",
+    ] {
+        assert!(all.contains(line), "missing {line:?} in\n{all}");
+    }
+    assert_eq!(all.matches("attempt").count(), 1, "{all}");
+    assert!(!p.path("setup-marker.txt").exists(), "{all}");
+    assert!(all.contains("3 passed, 8 skipped"), "{all}");
+    assert!(
+        all.contains("setup skipped the file — not configured here"),
+        "{all}"
+    );
+    let junit = std::fs::read_to_string(p.path("report.xml")).unwrap();
+    assert!(
+        junit.contains("<skipped message=\"two is skipped\"/>"),
+        "{junit}"
+    );
+}

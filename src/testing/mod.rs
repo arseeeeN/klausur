@@ -5,7 +5,7 @@ pub mod generators;
 
 use crate::runtime::undo::{self, DirtyReport, ScopeKind};
 use crate::runtime::value::{self, display, map_of};
-use crate::runtime::{CaseFrame, Ctx, CtxData, Failure, ScriptFn, Shared};
+use crate::runtime::{CaseFrame, Ctx, CtxData, Failure, ScriptFn, Shared, Skip};
 use crate::source::FileId;
 use generators::{Gen, Rng, derive_seed};
 use rhai::{Array, Dynamic, Engine, EvalAltResult, FnPtr, ImmutableString, Map, Scope};
@@ -196,6 +196,17 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
     engine.register_fn("skip", |t: &mut TestDef, reason: Dynamic| {
         t.0.borrow_mut().skip = Some(value::display_plain(&reason))
     });
+    // `skip(reason)` in a body, a hook or a file's setup: ends the case (or skips the file) as
+    // skipped. The modifiers above take the test definition, so they don't clash with these.
+    engine.register_fn("skip", || -> Result<(), Box<EvalAltResult>> {
+        Err(Skip(String::new()).into_err())
+    });
+    engine.register_fn(
+        "skip",
+        |reason: Dynamic| -> Result<(), Box<EvalAltResult>> {
+            Err(Skip(value::display_plain(&reason)).into_err())
+        },
+    );
     engine.register_fn("only", |t: &mut TestDef| t.0.borrow_mut().only = true);
     engine.register_fn("parallel", |t: &mut TestDef| {
         t.0.borrow_mut().parallel = true
@@ -284,6 +295,16 @@ pub struct CaseResult {
 }
 
 impl CaseResult {
+    /// Why `skip(reason)` ended the case, if it did.
+    pub fn skipped(&self) -> Option<&str> {
+        self.outcome.as_ref().err()?.skipped.as_deref()
+    }
+
+    /// Failed, rather than passed or skipped.
+    pub fn failed(&self) -> bool {
+        matches!(&self.outcome, Err(f) if f.skipped.is_none())
+    }
+
     /// A test that couldn't run at all, e.g. because its modifiers failed.
     pub fn error(test: String, failure: Failure) -> Self {
         CaseResult {
@@ -358,9 +379,11 @@ fn result_map(run: &CaseRun, outcome: Outcome) -> Dynamic {
         Err(f) => f.to_string().into(),
     };
     let passed = outcome.is_ok();
+    let skipped = skipped_of(&outcome);
     outcomes.push(outcome);
     map_of([
         ("passed", passed.into()),
+        ("skipped", skipped),
         ("error", error),
         ("id", id.into()),
     ])
@@ -415,7 +438,8 @@ pub fn run_around(
             Hook::Retries(n) => {
                 let mut outcome = run_around(shared, engine, run, idx, k + 1);
                 for attempt in 1..=*n {
-                    if outcome.is_ok() || shared.flags.interrupted() {
+                    let skipped = matches!(&outcome, Err(f) if f.skipped.is_some());
+                    if outcome.is_ok() || skipped || shared.flags.interrupted() {
                         break;
                     }
                     run.ctx
@@ -450,6 +474,7 @@ pub fn run_around(
     for f in &layer.after {
         let result = map_of([
             ("passed", outcome.is_ok().into()),
+            ("skipped", skipped_of(&outcome)),
             (
                 "error",
                 outcome
@@ -470,6 +495,17 @@ pub fn run_around(
         }
     }
     outcome
+}
+
+/// `result.skipped` for hooks: the reason, or `()`.
+fn skipped_of(outcome: &Outcome) -> Dynamic {
+    match outcome {
+        Err(Failure {
+            skipped: Some(reason),
+            ..
+        }) => reason.clone().into(),
+        _ => Dynamic::UNIT,
+    }
 }
 
 fn interpret_around(run: &CaseRun, ret: Dynamic, before: usize) -> Outcome {
@@ -791,6 +827,7 @@ pub fn run_case(
     shared.flags.deadline.set(def.timeout.map(|t| started + t));
     let mut outcome = run_layers(shared, engine, &run, 0);
     if let (Err(f), Some(t)) = (&mut outcome, def.timeout)
+        && f.skipped.is_none()
         && started.elapsed() >= t
     {
         // Keep what a page wait was waiting for: "timed out while `click(…)` waited: …".
@@ -801,7 +838,9 @@ pub fn run_case(
     }
     shared.flags.deadline.set(None);
     // Capture the page as the failure left it, before undo actions change anything.
-    if let (Err(f), Some(session)) = (&mut outcome, frame.browser.borrow().as_ref()) {
+    if let (Err(f), Some(session)) = (&mut outcome, frame.browser.borrow().as_ref())
+        && f.skipped.is_none()
+    {
         let case = spec.label.clone().unwrap_or_else(|| {
             let args: Vec<String> = spec.args.iter().map(|(_, v)| display(v)).collect();
             args.join(",")

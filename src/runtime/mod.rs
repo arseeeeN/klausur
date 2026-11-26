@@ -364,6 +364,12 @@ impl Shared {
                     f.trace = trace.into();
                     return f;
                 }
+                EvalAltResult::ErrorTerminated(token, _) if token.is::<Skip>() => {
+                    let reason = token.clone().cast::<Skip>().0;
+                    let mut f = Failure::new(format!("skipped: {reason}"));
+                    f.skipped = Some(reason);
+                    return f;
+                }
                 EvalAltResult::ErrorTerminated(token, pos) => {
                     let mut f = Failure::new(
                         token
@@ -494,6 +500,22 @@ pub struct Failure {
     pub page: Option<Box<PageReport>>,
     /// Call sites leading to the failure, outermost first.
     pub trace: Box<[Span]>,
+    /// Not a failure: `skip(reason)` ended the case (or the file's setup).
+    pub skipped: Option<String>,
+}
+
+/// What `skip(reason)` ends a case with: Rhai's `ErrorTerminated`, which `try`/`catch` can't
+/// intercept, carrying this as its token.
+#[derive(Clone)]
+pub struct Skip(pub String);
+
+impl Skip {
+    pub fn into_err(self) -> Box<EvalAltResult> {
+        Box::new(EvalAltResult::ErrorTerminated(
+            Dynamic::from(self),
+            Position::NONE,
+        ))
+    }
 }
 
 impl Failure {
@@ -506,6 +528,7 @@ impl Failure {
             exchange: None,
             page: None,
             trace: Box::default(),
+            skipped: None,
         }
     }
 
