@@ -1,6 +1,6 @@
 {
   "name": "klausur",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Write, run and debug API and browser end-to-end tests with klausur, and turn ticket or pull-request requirements into tests",
   "author": {
     "name": "Arsenije Jevric"
