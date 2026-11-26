@@ -29,6 +29,8 @@ pub struct Program {
     pub roots: Vec<FileId>,
     /// `setup` and `teardown` of each test file, in order.
     pub setups: HashMap<FileId, Vec<(Span, SetupStep)>>,
+    /// The unit of `klausur run -e`'s expression.
+    pub snippet: Option<usize>,
 }
 
 /// One `setup`/`teardown` item, compiled.
@@ -57,6 +59,8 @@ pub struct LoadOptions {
     pub env_name: Option<String>,
     pub interrupted: Arc<AtomicBool>,
     pub seed: u64,
+    /// `klausur run -e '<expr>'`: code compiled like a test body, as the source `<-e>`.
+    pub snippet: Option<String>,
 }
 
 struct Loaded {
@@ -76,11 +80,17 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
         });
     }
     let Loaded {
-        sources,
+        mut sources,
         files,
-        aliases,
+        mut aliases,
         roots,
     } = loaded;
+    // `run -e`: a source of its own, with relative paths resolved against the working directory.
+    let snippet_file = opts.snippet.as_ref().map(|code| {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        aliases.push(HashMap::new());
+        sources.add(&cwd.join("<-e>"), code.clone())
+    });
 
     // Symbols: functions and requests share one namespace.
     let mut defs: HashMap<FileId, HashSet<String>> = HashMap::new();
@@ -329,6 +339,12 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
             }
         }
     }
+    let snippet = snippet_file.and_then(|file| {
+        let len = shared.sources.get(file).text.len();
+        let span = Span::new(file, 0, len);
+        let code = c.build(file, span, |r, out| r.rewrite_block(0, len, out))?;
+        c.compile(&engine, file, code)
+    });
     if !c.diags.is_empty() {
         let diags = c.diags;
         return Err(LoadError {
@@ -351,6 +367,7 @@ pub fn load(paths: &[PathBuf], opts: LoadOptions) -> Result<Program, LoadError> 
         fns,
         roots,
         setups,
+        snippet,
     })
 }
 

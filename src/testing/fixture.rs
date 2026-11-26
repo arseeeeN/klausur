@@ -175,5 +175,6 @@ fn finished(
         duration: started.elapsed(),
         logs: std::mem::take(&mut frame.ctx.0.borrow_mut().logs),
         generated: false,
+        repeat: None,
     }
 }

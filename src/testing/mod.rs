@@ -292,6 +292,8 @@ pub struct CaseResult {
     pub duration: Duration,
     pub logs: Vec<String>,
     pub generated: bool,
+    /// Run i of n of the same case; the report sums them up.
+    pub repeat: Option<(u64, u64)>,
 }
 
 impl CaseResult {
@@ -316,6 +318,7 @@ impl CaseResult {
             duration: Duration::ZERO,
             logs: Vec::new(),
             generated: false,
+            repeat: None,
         }
     }
 
@@ -538,6 +541,8 @@ pub struct CaseSpec {
     pub label: Option<String>,
     pub seed: u64,
     pub generated: bool,
+    /// Run i of n of the same case (`runs(n)` or `--runs` without generators).
+    pub repeat: Option<(u64, u64)>,
 }
 
 /// A case as plain data, for sending to a parallel worker, so the worker doesn't evaluate the
@@ -547,6 +552,7 @@ pub struct WireCase {
     label: Option<String>,
     seed: u64,
     generated: bool,
+    repeat: Option<(u64, u64)>,
 }
 
 impl CaseSpec {
@@ -563,6 +569,7 @@ impl CaseSpec {
             label: self.label.clone(),
             seed: self.seed,
             generated: self.generated,
+            repeat: self.repeat,
         })
     }
 }
@@ -578,6 +585,7 @@ impl WireCase {
             label: self.label,
             seed: self.seed,
             generated: self.generated,
+            repeat: self.repeat,
         }
     }
 }
@@ -704,7 +712,11 @@ pub fn expand_cases(
         }
     }
     let generated = sources.iter().any(|(_, s)| matches!(s, Source::Gen(_)));
-    let runs = def.runs.unwrap_or(if generated { DEFAULT_RUNS } else { 1 });
+    let runs = shared
+        .config
+        .runs
+        .or(def.runs)
+        .unwrap_or(if generated { DEFAULT_RUNS } else { 1 });
     let base = def.seed.unwrap_or(base_seed);
     let file = shared.sources.get(test.file).name.as_bytes();
     let mut cases = Vec::new();
@@ -750,6 +762,7 @@ pub fn expand_cases(
                 label,
                 seed,
                 generated,
+                repeat: (!generated && runs > 1).then_some((ri, runs)),
             });
         }
     }
@@ -904,6 +917,7 @@ pub fn run_case(
         duration: started.elapsed(),
         logs,
         generated: spec.generated,
+        repeat: spec.repeat,
     }
 }
 

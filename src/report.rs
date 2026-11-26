@@ -294,11 +294,28 @@ pub struct Reporter<'a> {
     pub seed: u64,
     pub generated: bool,
     current_file: Option<String>,
-    failures: Vec<CaseResult>,
+    /// Failed cases, with a note for repeated ones ("3 of 30 runs failed; this is run 7").
+    failures: Vec<(CaseResult, Option<String>)>,
+    /// The runs of a repeated case seen so far; reported as one line when complete.
+    tally: Option<Tally>,
     dirty: Vec<(String, u64, DirtyReport)>,
     /// Every case, for `--junit`.
     junit: Vec<JunitCase>,
     pub summary: Summary,
+}
+
+#[derive(Default)]
+struct Tally {
+    file: String,
+    label: String,
+    total: u64,
+    seen: u64,
+    passed: u64,
+    failed: u64,
+    skipped: u64,
+    duration: Duration,
+    skip_reason: Option<String>,
+    first_failure: Option<(u64, CaseResult)>,
 }
 
 struct JunitCase {
@@ -324,6 +341,7 @@ impl<'a> Reporter<'a> {
             generated: false,
             current_file: None,
             failures: Vec::new(),
+            tally: None,
             dirty: Vec::new(),
             junit: Vec::new(),
             summary: Summary::default(),
@@ -331,6 +349,7 @@ impl<'a> Reporter<'a> {
     }
 
     fn file(&mut self, file: &str) {
+        self.flush_tally();
         if self.current_file.as_deref() != Some(file) {
             println!("{}", bold(file));
             self.current_file = Some(file.to_string());
@@ -338,6 +357,9 @@ impl<'a> Reporter<'a> {
     }
 
     pub fn case(&mut self, file: &str, result: CaseResult) {
+        if let Some((i, n)) = result.repeat {
+            return self.repeated(file, result, i, n);
+        }
         if let Some(reason) = result.skipped() {
             let reason = reason.to_string();
             self.skipped(file, &result.label(), &reason);
@@ -415,8 +437,142 @@ impl<'a> Reporter<'a> {
             }
         }
         if result.failed() {
-            self.failures.push(result);
+            self.failures.push((result, None));
         }
+    }
+
+    /// One run of a case that runs several times (`--runs`, `runs(n)`).
+    fn repeated(&mut self, file: &str, result: CaseResult, i: u64, n: u64) {
+        let label = result.label();
+        if self
+            .tally
+            .as_ref()
+            .is_some_and(|t| t.file != file || t.label != label)
+        {
+            self.flush_tally();
+        }
+        if self.tally.is_none() {
+            self.file(file);
+        }
+        let t = self.tally.get_or_insert_with(|| Tally {
+            file: file.to_string(),
+            label: label.clone(),
+            total: n,
+            ..Tally::default()
+        });
+        t.seen += 1;
+        t.duration += result.duration;
+        if !result.dirty.is_empty() {
+            self.summary.dirty += 1;
+            for d in &result.dirty {
+                self.dirty
+                    .push((format!("{label} (run {})", i + 1), self.seed, d.clone()));
+            }
+        }
+        let t = self.tally.as_mut().expect("set above");
+        if let Some(reason) = result.skipped() {
+            t.skipped += 1;
+            t.skip_reason.get_or_insert_with(|| reason.to_string());
+        } else if result.failed() {
+            t.failed += 1;
+            if t.first_failure.is_none() {
+                t.first_failure = Some((i, result));
+            }
+        } else {
+            t.passed += 1;
+        }
+        if t.seen >= t.total {
+            self.flush_tally();
+        }
+    }
+
+    /// Report the runs of a repeated case as one line. Also when the run stopped before all of
+    /// them came back.
+    fn flush_tally(&mut self) {
+        let Some(t) = self.tally.take() else {
+            return;
+        };
+        let runs = |k: u64| {
+            if k == 1 {
+                "1 run".to_string()
+            } else {
+                format!("{k} runs")
+            }
+        };
+        let time = dim(format!("({})", humantime(t.duration)));
+        let stopped = if t.seen < t.total {
+            format!(
+                " {}",
+                dim(format!("stopped after {} of {}", t.seen, t.total))
+            )
+        } else {
+            String::new()
+        };
+        let skipped = if t.skipped > 0 && t.skipped < t.seen {
+            format!(", {} skipped", t.skipped)
+        } else {
+            String::new()
+        };
+        let outcome = if t.failed > 0 {
+            self.summary.failed += 1;
+            println!(
+                "  {} {} {} {time}{stopped}",
+                red("✗"),
+                t.label,
+                red(format!(
+                    "— {} of {} failed{skipped}",
+                    t.failed,
+                    runs(t.seen)
+                ))
+            );
+            let (i, first) = t.first_failure.expect("a failed run");
+            let note = format!(
+                "{} of {} failed; this is the first, run {}",
+                t.failed,
+                runs(t.seen),
+                i + 1
+            );
+            let outcome = match &first.outcome {
+                Err(f) => JunitOutcome::Failed {
+                    message: format!("{} of {} failed: {}", t.failed, runs(t.seen), f.message),
+                    text: plain(&render_failure(f, self.sources)),
+                },
+                Ok(()) => JunitOutcome::Passed,
+            };
+            if self.verbose {
+                for line in &first.logs {
+                    println!("      {}", dim(line));
+                }
+            }
+            self.failures.push((first, Some(note)));
+            outcome
+        } else if t.passed > 0 {
+            self.summary.passed += 1;
+            println!(
+                "  {} {} {}{skipped} {time}{stopped}",
+                green("✓"),
+                t.label,
+                dim(runs(t.seen))
+            );
+            JunitOutcome::Passed
+        } else {
+            self.summary.skipped += 1;
+            let reason = t.skip_reason.unwrap_or_default();
+            let shown = if reason.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", dim(format!("— {reason}")))
+            };
+            println!("  {} {}{shown}", yellow("○"), t.label);
+            JunitOutcome::Skipped(reason_text(&reason))
+        };
+        self.junit.push(JunitCase {
+            file: t.file,
+            name: t.label,
+            seconds: t.duration.as_secs_f64(),
+            outcome,
+            logs: Vec::new(),
+        });
     }
 
     /// The run as a JUnit XML report: one `<testsuite>` per file, in run order.
@@ -537,10 +693,14 @@ impl<'a> Reporter<'a> {
     }
 
     pub fn finish(&mut self, elapsed: Duration) {
+        self.flush_tally();
         if !self.failures.is_empty() {
             println!("\n{}", bold("Failures"));
-            for r in &self.failures {
+            for (r, note) in &self.failures {
                 println!("\n{} {}", red("──"), bold(r.label()));
+                if let Some(note) = note {
+                    println!("  {} {}", dim("runs:"), dim(note));
+                }
                 if let Some(full) = r.long_label() {
                     println!("  {} {}", dim("label:"), dim(full));
                 }

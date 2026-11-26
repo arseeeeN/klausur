@@ -3040,3 +3040,93 @@ test "an existing path isn't replaced" {
     assert!(all.contains("3 passed, 1 failed"), "{all}");
     assert!(all.contains("something is there already"), "{all}");
 }
+
+#[test]
+fn runs_are_summed_up_per_case() {
+    let server = start();
+    let p = project(
+        "runs",
+        r#"
+@flicker() {
+    connection { GET {{base}}/flicker/runs?alternate=1 }
+}
+
+test "sometimes down" {
+    expect flicker().status == 200
+}
+
+test "always fine" (n in [1, 2]) {
+    expect n > 0
+}
+
+test "own runs" runs(3) {
+    log("run")
+}
+"#,
+    );
+    let out = p.run(
+        &server,
+        &["test", "-j", "1", "--runs", "6", "--junit", "report.xml"],
+    );
+    let all = out.all();
+    assert_eq!(out.code, 1, "{all}");
+    assert!(all.contains("sometimes down — 3 of 6 runs failed"), "{all}");
+    assert!(all.contains("always fine [n=1] 6 runs"), "{all}");
+    assert!(all.contains("always fine [n=2] 6 runs"), "{all}");
+    assert!(
+        all.contains("own runs 6 runs"),
+        "--runs overrides runs(n): {all}"
+    );
+    assert!(
+        all.contains("3 of 6 runs failed; this is the first, run 1"),
+        "{all}"
+    );
+    assert!(all.contains("3 passed, 1 failed"), "{all}");
+    let junit = std::fs::read_to_string(p.path("report.xml")).unwrap();
+    assert_eq!(junit.matches("<testcase").count(), 4, "{junit}");
+    assert!(junit.contains("3 of 6 runs failed"), "{junit}");
+}
+
+#[test]
+fn run_evaluates_expressions() {
+    let server = start();
+    let p = project(
+        "run-eval",
+        r#"
+@flicker() {
+    connection { GET {{base}}/flicker/eval?alternate=1 }
+}
+"#,
+    );
+    p.file("fixture.txt", "from the working directory");
+    // Once: the result as `run` shows it; named arguments and the files' requests work.
+    let out = p.run(
+        &server,
+        &["run", "-q", "-e", r#"echo(value: "hi").body.query"#, "."],
+    );
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains(r#""q": "hi""#), "{}", out.all());
+    // Relative paths from the working directory; statements separated by newlines.
+    let out = p.run(
+        &server,
+        &["run", "-e", "let t = read_file(\"fixture.txt\")\nt.len()"],
+    );
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert_eq!(out.stdout.trim(), "26", "{}", out.all());
+    // N times: identical results counted, most frequent first.
+    let out = p.run(&server, &["run", "-e", "flicker().status", "-n", "6"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(
+        out.stdout.contains("3× 200") && out.stdout.contains("3× 503"),
+        "{}",
+        out.all()
+    );
+    // Errors are counted too, and fail the run.
+    let out = p.run(&server, &["run", "-e", "fail(\"nope\")", "-n", "2"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    assert!(out.stdout.contains("2× error: nope"), "{}", out.all());
+    // A mistake in the expression is reported against `<-e>`.
+    let out = p.run(&server, &["run", "-e", "nothing_like_this()"]);
+    assert_eq!(out.code, 1, "{}", out.all());
+    assert!(out.all().contains("<-e>"), "{}", out.all());
+}

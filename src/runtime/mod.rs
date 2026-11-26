@@ -60,6 +60,8 @@ pub struct Config {
     pub undo_backoff: Duration,
     /// Show the browser window instead of running Chrome headless.
     pub headed: bool,
+    /// `klausur test --runs N`: run every case N times (generated tests: N samples).
+    pub runs: Option<u64>,
 }
 
 impl Default for Config {
@@ -71,6 +73,7 @@ impl Default for Config {
             undo_attempts: 3,
             undo_backoff: Duration::from_millis(250),
             headed: false,
+            runs: None,
         }
     }
 }

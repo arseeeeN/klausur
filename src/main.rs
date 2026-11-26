@@ -41,10 +41,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run one request or function and show the result.
+    /// Run one request or function and show the result, or evaluate an expression with `-e`.
     Run {
-        /// `file.kl` or `file.kl#name`.
-        target: String,
+        /// `file.kl` or `file.kl#name`. With `-e`: the files or folder whose requests and
+        /// functions the expression uses (default: the current folder).
+        target: Option<String>,
+        /// Evaluate this expression instead, like a test body: `-e 'search("x").body.total'`.
+        #[arg(short = 'e', long = "eval", value_name = "EXPR")]
+        eval: Option<String>,
+        /// With `-e`: evaluate it N times and count how often each result came back.
+        #[arg(short = 'n', long = "times", value_name = "N", default_value_t = 1,
+              value_parser = clap::value_parser!(u64).range(1..))]
+        times: u64,
         /// Arguments as `name=value` (JSON values are parsed, anything else is a string).
         #[arg(short, long = "arg", value_name = "NAME=VALUE")]
         args: Vec<String>,
@@ -122,6 +130,10 @@ struct TestArgs {
     /// Also write the results as a JUnit XML report (for GitLab, Jenkins, …).
     #[arg(long, value_name = "FILE")]
     junit: Option<PathBuf>,
+    /// Run every case N times, e.g. to find out how often a flaky test fails. Each case is
+    /// reported once, with how many of its runs failed. Overrides `runs(n)`.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    runs: Option<u64>,
     /// Run again whenever a `.kl` file (or anything else in the test folders) changes.
     #[arg(short, long)]
     watch: bool,
@@ -166,11 +178,38 @@ fn main() -> ExitCode {
     let code = match cli.command {
         Command::Run {
             target,
+            eval: Some(expr),
+            times,
+            env,
+            quiet,
+            timeout,
+            headed,
+            ..
+        } => run_eval(
+            target.as_deref().unwrap_or("."),
+            &expr,
+            times,
+            env,
+            quiet,
+            timeout,
+            headed,
+            interrupted,
+        ),
+        Command::Run { target: None, .. } => {
+            eprintln!(
+                "{} name a file (`file.kl` or `file.kl#name`), or pass an expression with -e",
+                red("error:")
+            );
+            2
+        }
+        Command::Run {
+            target: Some(target),
             args,
             env,
             quiet,
             timeout,
             headed,
+            ..
         } => run(&target, &args, env, quiet, timeout, headed, interrupted),
         Command::Test(args) if args.watch => watch(&args, interrupted),
         Command::Test(args) => test(&args, interrupted),
@@ -254,6 +293,7 @@ fn run(
         env_name: env,
         interrupted,
         seed: seed_now(),
+        snippet: None,
     };
     let program = match load_or_report(&[PathBuf::from(path)], opts) {
         Ok(p) => p,
@@ -377,6 +417,96 @@ fn run(
     code
 }
 
+/// `klausur run -e '<expr>' [-n N] [path]`: evaluate an expression with the files' requests and
+/// functions, in an undo scope of its own (so `undo: true` cleans up after each evaluation).
+/// With `-n`, count how often each result came back, most frequent first.
+#[allow(clippy::too_many_arguments)]
+fn run_eval(
+    path: &str,
+    expr: &str,
+    times: u64,
+    env: Option<String>,
+    quiet: bool,
+    timeout: u64,
+    headed: bool,
+    interrupted: Arc<AtomicBool>,
+) -> i32 {
+    let config = Config {
+        // N evaluations would print N traces; the tally is what's wanted there.
+        trace: !quiet && times == 1,
+        request_timeout: std::time::Duration::from_secs(timeout),
+        headed,
+        ..Config::default()
+    };
+    let opts = LoadOptions {
+        config,
+        env_name: env,
+        interrupted: interrupted.clone(),
+        seed: seed_now(),
+        snippet: Some(expr.to_string()),
+    };
+    let program = match load_or_report(&[PathBuf::from(path)], opts) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let shared = &program.shared;
+    let unit = program.snippet.expect("load compiles the snippet");
+    let mut counts: Vec<(String, u64)> = Vec::new();
+    let mut code = 0;
+    for _ in 0..times {
+        if interrupted.load(Ordering::SeqCst) {
+            break;
+        }
+        runtime::undo::open(shared, runtime::undo::ScopeKind::Scoped);
+        let result = shared.eval(&program.engine, unit, &mut Scope::new());
+        runtime::undo::close(shared, &program.engine, true);
+        let shown = match result {
+            Ok(v) if times == 1 => {
+                print_result(&v);
+                continue;
+            }
+            Ok(v) => value::to_json(&v)
+                .map(|j| j.to_string())
+                .unwrap_or_else(|_| display(&v)),
+            Err(e) => {
+                code = 1;
+                let f = shared.to_failure(&e, Some(unit));
+                if times == 1 {
+                    eprint!("{}", render_failure(&f, &shared.sources));
+                    continue;
+                }
+                red(format!("error: {}", f.message)).to_string()
+            }
+        };
+        match counts.iter_mut().find(|(s, _)| *s == shown) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((shown, 1)),
+        }
+    }
+    // Most frequent first; ties keep the order they first appeared in.
+    counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    let width = counts.first().map_or(1, |(_, n)| n.to_string().len());
+    for (shown, n) in &counts {
+        println!(
+            "{}{} {shown}",
+            " ".repeat(width - n.to_string().len()),
+            bold(format!("{n}×"))
+        );
+    }
+    let state = shared.state.borrow();
+    if !state.orphan_dirty.is_empty() {
+        let entries: Vec<_> = state
+            .orphan_dirty
+            .iter()
+            .map(|d| (String::new(), 0, runtime::undo::DirtyReport::from(d)))
+            .collect();
+        let entries: Vec<_> = entries.iter().map(|(c, s, d)| (c.clone(), *s, d)).collect();
+        eprint!("{}", report::render_dirty(&entries, &shared.sources));
+        code = 3;
+    }
+    code
+}
+
 /// Request results: status and headers to stderr, the body to stdout. Other values: printed as JSON.
 fn print_result(v: &Dynamic) {
     let Some(map) = v
@@ -450,6 +580,7 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
         verbose,
         timeout,
         headed,
+        runs,
         ..
     } = args.clone();
     let jobs = args.jobs.max(1);
@@ -470,6 +601,7 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
         trace: verbose,
         request_timeout: std::time::Duration::from_secs(timeout),
         headed,
+        runs,
         ..Config::default()
     };
     let opts = LoadOptions {
@@ -477,6 +609,7 @@ fn test(args: &TestArgs, interrupted: Arc<AtomicBool>) -> i32 {
         env_name: env,
         interrupted: interrupted.clone(),
         seed,
+        snippet: None,
     };
     let program = match load_or_report(&paths, opts.clone()) {
         Ok(p) => p,
@@ -1075,6 +1208,7 @@ fn list(paths: &[PathBuf]) -> i32 {
         env_name: None,
         interrupted: Arc::default(),
         seed: 0,
+        snippet: None,
     };
     match load_or_report(paths, opts) {
         Ok(program) => {
