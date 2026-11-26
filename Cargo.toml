@@ -19,7 +19,7 @@ ctrlc = "3"
 dotenvy = "0.15"
 dunce = "1"
 miette = { version = "7.6", features = ["fancy"] }
-notify = "8"
+notify = "9"
 percent-encoding = "2"
 regex = "1"
 rhai = { version = "1.26", features = ["internals", "serde"] }
