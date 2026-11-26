@@ -2889,3 +2889,27 @@ test "cases come from the plan" (x in plan()) parallel {
     assert_eq!(out.code, 0, "{}", out.all());
     assert!(out.stdout.contains("4 passed"), "{}", out.all());
 }
+
+#[test]
+fn last_index_of_strings_and_arrays() {
+    let server = start();
+    let p = project(
+        "last-index-of",
+        r#"
+test "strings count characters" {
+    expect "a/b/c".last_index_of("/") == 3
+    expect "äöä".last_index_of("ä") == 2
+    expect "abc".last_index_of("x") == -1
+}
+test "arrays by value or closure" {
+    expect [1, 2, 1, 3].last_index_of(1) == 2
+    expect [1, 2, 1, 3].last_index_of(|x| x < 3) == 2
+    expect [1, "1"].last_index_of(1) == 0
+    expect [#{ a: 1 }, #{ a: 2 }].last_index_of(#{ a: 1 }) == 0
+    expect [].last_index_of(1) == -1
+}
+"#,
+    );
+    let out = p.run(&server, &["test"]);
+    assert_eq!(out.code, 0, "{}", out.all());
+}

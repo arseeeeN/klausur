@@ -164,11 +164,31 @@ let f = |x| x * 2;  f.call(3)           // closures capture by value
 fn name(a, b = 2) { a + b }             // last expression is the return value
 ```
 
-- Arrays: `map`, `filter`, `find` (element or `()`), `index_of`, `some`, `all`, `reduce(|acc, x| …, init)`,
-  `contains`, `len`, `is_empty`, `sorted()`, `sorted(|a, b| …)`, `reversed()`.
-- Strings: `contains`, `starts_with`, `ends_with`, `to_lower`, `to_upper`, `sub_string(start, len)`,
-  `split(sep)`, `index_of`, `len`, `trimmed()`, `parse_int(s)`, `parse_float(s)`.
-- Maps: `keys`, `values`, `contains`, `to_json()`; `parse_json(s)` parses JSON text.
+- Arrays, returning a new value: `map`, `filter` (both also `|x, i|` with the index), `find`
+  (element or `()`), `find_map`, `index_of`/`last_index_of` (a value or `|x| …`; -1 if none),
+  `some`, `all`, `reduce(|acc, x| …, init)`, `reduce_rev`, `zip(other, |a, b| …)`, `contains`,
+  `x in a`, `len`, `is_empty`, `get(i)`, `a[-1]` (from the end), `extract(start)` /
+  `extract(start, len)` (a slice; `a[1..3]` doesn't work), `a + b`, `sorted()`,
+  `sorted(|a, b| …)`, `reversed()`.
+- Arrays, changed in place (they return `()` or the removed part, not the array): `push`,
+  `append`, `insert(i, x)`, `pop`, `shift`, `remove(i)`, `clear`, `truncate(n)`, `chop(n)` (keeps
+  the *last* n), `pad(n, x)`, `splice(start, len, items)`, `retain(|x| …)`, `drain(|x| …)`
+  (returns the removed elements), `split(i)` (returns the tail), `dedup()` (adjacent only),
+  `sort()`, `sort(|a, b| …)`, `sort_desc()`, `reverse()`. No `sum`: `reduce(|s, x| s + x, 0)`.
+- Strings: `contains`, `starts_with`, `ends_with`, `to_lower`, `to_upper`, `sub_string(start)`,
+  `sub_string(start, len)`, `s[1..3]`, `s[i]` (a char), `split(sep)`, `split(sep, n)`,
+  `split_rev(sep)`, `index_of(x)`, `index_of(x, from)`, `last_index_of(x)`, `len` (characters;
+  `bytes` for UTF-8 bytes), `to_chars()`, `trimmed()`, `parse_int(s)`, `parse_int(s, radix)`,
+  `parse_float(s)`, `x.to_string()`. Positions count characters, not bytes.
+- Strings changed in place (return `()`): `trim`, `replace(a, b)`, `remove(x)`, `crop(start,
+  len)`, `truncate(n)`, `pad(n, s)`, `make_upper`/`make_lower`. `let t = s.trim()` gives `()`;
+  use `trimmed()`, or call it on its own line and use `s`.
+- Numbers: `abs`, `round()` (no decimal places argument), `floor`, `ceiling`, `to_int()` on
+  floats, `to_float()`, `**` for powers, `min(a, b)`, `max(a, b)`.
+- Maps: `keys`, `values`, `contains(k)`, `k in m`, `get(k)`, `len`, `is_empty`, `m + other`,
+  `filter(|k, v| …)`, `to_json()`; in place: `remove(k)` (returns the value), `mixin(other)`
+  (overwrites), `fill_with(other)` (only adds missing keys), `retain(|k, v| …)`,
+  `drain(|k, v| …)`. `parse_json(s)` parses JSON text.
 - A missing map key is `()`, not an error. Integer division truncates (`7 / 2 == 3`).
 - `${map}` and `print`/`log` show maps and arrays as JSON.
 
@@ -181,7 +201,13 @@ test "name, as a behaviour" (params) modifiers { body }
 Parameter sources, one case per value or row:
 - `(role in ["user", "admin"])`; several `in` parameters → every combination; ranges work (`n in 1..5`).
 - `(user, pass, ok) cases [ #{ user: "a", pass: "x", ok: false }, … ]`; also
-  `cases csv("rows.csv")`, `cases json("rows.json")`.
+  `cases csv("rows.csv")`, `cases json("rows.json")`. Rows may hold closures
+  (`check: |path| …`) for values that depend on something only the case knows.
+- Sources can call requests and functions: `(call in protected_calls())` builds one case per
+  entry of a live API answer. They run once, when the run is planned (before any case, also
+  before `setup`, so a `setup let` value can't be a source), and parallel workers get the
+  planned cases. If a source fails, only its test
+  is reported as an error; the rest of the run goes on.
 - Generators: `(name in gen::string(1..64))`, 25 samples per combination unless `runs(n)`.
   `gen::int(range)`, `float(range)`, `string(len)`, `email()`, `uuid()`, `one_of(a, b, …)`,
   `array(gen, len)`, `map(#{ k: gen })`, `gen::custom(|rng| …)`. A failure prints the seed;

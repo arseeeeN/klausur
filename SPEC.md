@@ -339,6 +339,7 @@ fn onboard(name) {
 | `html_text(html)` | The visible text of a page, without `<head>`, scripts and styles |
 | `json_path(value, path)` | Every value a JSONPath (RFC 9535) selects, as an array: `json_path(body, "$..url")`. The leading `$` is optional |
 | `s.trimmed()`, `a.sorted()`, `a.sorted(\|x, y\| …)`, `a.reversed()` | Changed copies. Rhai's own `trim`, `sort` and `reverse` change the value in place and return `()`, so `let t = s.trim()` is `()`. For case, Rhai's `to_lower()` and `to_upper()` already return copies |
+| `s.last_index_of(x)`, `a.last_index_of(x)`, `a.last_index_of(\|x\| …)` | The last position of a substring (in characters), a value or an element the closure accepts; -1 if there's none. The counterpart of Rhai's `index_of` |
 
 Top-level `let`s are evaluated **lazily** on first use. So their order doesn't matter, and
 an unused `env("X")` doesn't fail when `X` isn't set.
@@ -366,7 +367,8 @@ parameter sources the test declares.
 - **Generators:** `(name in gen::string(1..64))`. The test samples `runs(n)`
   times. When combined with lists, it takes n samples per combination.
 - **When sources run:** `in` sources and `cases` tables are evaluated once, when the run is
-  planned, so they may call requests (`(call in protected_calls())`). Parallel workers run the
+  planned, before any case and before `setup` (§8.7), so they may call requests
+  (`(call in protected_calls())`) but can't use `setup let` values. Parallel workers run the
   planned cases rather than evaluating the sources again. If a source fails, only its test is
   reported as an error.
 

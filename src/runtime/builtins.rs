@@ -570,6 +570,35 @@ pub fn register(engine: &mut Engine, shared: &Rc<Shared>) {
         sorted,
     );
 
+    // `last_index_of`, the counterpart of Rhai's `index_of`: a character position for strings,
+    // an element for arrays (a value, or the last one a closure accepts); -1 when there's none.
+    engine.register_fn("last_index_of", |s: &str, find: &str| -> i64 {
+        s.rfind(find)
+            .map_or(-1, |byte| s[..byte].chars().count() as i64)
+    });
+    engine.register_fn(
+        "last_index_of",
+        |ctx: NativeCallContext, a: &mut Array, find: Dynamic| -> R<i64> {
+            let f = find.read_lock::<FnPtr>().map(|f| f.clone());
+            for (i, item) in a.iter().enumerate().rev() {
+                let found = match &f {
+                    Some(f) => f
+                        .call_within_context::<Dynamic>(&ctx, (item.clone(),))?
+                        .as_bool()
+                        .unwrap_or(false),
+                    // Like `index_of`: values without an `==` between them aren't equal.
+                    None => ctx
+                        .call_native_fn::<bool>("==", (item.clone(), find.clone()))
+                        .unwrap_or(false),
+                };
+                if found {
+                    return Ok(i as i64);
+                }
+            }
+            Ok(-1)
+        },
+    );
+
     engine.register_fn("sse_parse", |text: &str| parse_sse(text));
 
     engine.register_fn("base64_encode", |v: Dynamic| {
