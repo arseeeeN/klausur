@@ -367,7 +367,7 @@ impl Shared {
                 EvalAltResult::ErrorTerminated(token, _) if token.is::<Skip>() => {
                     let reason = token.clone().cast::<Skip>().0;
                     let mut f = Failure::new(format!("skipped: {reason}"));
-                    f.skipped = Some(reason);
+                    f.rare_mut().skipped = Some(reason);
                     return f;
                 }
                 EvalAltResult::ErrorTerminated(token, pos) => {
@@ -496,10 +496,17 @@ pub struct Failure {
     /// The values of the parts of a failed expectation, shown below the source.
     pub values: Box<[(String, String)]>,
     pub exchange: Option<Box<Exchange>>,
-    /// The page a browser test was on when it failed.
-    pub page: Option<Box<PageReport>>,
+    /// The browser page and the skip reason: rarely set, so boxed together to keep `Failure`
+    /// small (every Rhai error result carries one).
+    pub rare: Option<Box<Rare>>,
     /// Call sites leading to the failure, outermost first.
     pub trace: Box<[Span]>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Rare {
+    /// The page a browser test was on when it failed.
+    pub page: Option<PageReport>,
     /// Not a failure: `skip(reason)` ended the case (or the file's setup).
     pub skipped: Option<String>,
 }
@@ -526,9 +533,8 @@ impl Failure {
             details: Box::default(),
             values: Box::default(),
             exchange: None,
-            page: None,
+            rare: None,
             trace: Box::default(),
-            skipped: None,
         }
     }
 
@@ -538,6 +544,19 @@ impl Failure {
         let mut details = std::mem::take(&mut self.details).into_vec();
         details.push((label, value));
         self.details = details.into();
+    }
+
+    pub fn rare_mut(&mut self) -> &mut Rare {
+        self.rare.get_or_insert_with(Default::default)
+    }
+
+    pub fn page(&self) -> Option<&PageReport> {
+        self.rare.as_ref()?.page.as_ref()
+    }
+
+    /// Why `skip(reason)` ended the case, if this isn't a real failure.
+    pub fn skipped(&self) -> Option<&str> {
+        self.rare.as_ref()?.skipped.as_deref()
     }
 
     pub fn at(mut self, span: Span) -> Self {

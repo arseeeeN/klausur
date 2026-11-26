@@ -251,7 +251,7 @@ impl Session {
                 .and_then(|v| v.as_str().map(str::to_string))
                 .unwrap_or_default()
         };
-        f.page = Some(Box::new(PageReport {
+        f.rare_mut().page = Some(PageReport {
             url: read("location.href"),
             title: read("document.title"),
             screenshot,
@@ -265,7 +265,7 @@ impl Session {
                 .into_iter()
                 .filter(|line| !self.is_ignored(line.rsplit(' ').next()))
                 .collect(),
-        }));
+        });
     }
 
     fn is_ignored(&self, url: Option<&str>) -> bool {

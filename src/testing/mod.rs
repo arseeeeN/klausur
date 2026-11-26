@@ -297,12 +297,12 @@ pub struct CaseResult {
 impl CaseResult {
     /// Why `skip(reason)` ended the case, if it did.
     pub fn skipped(&self) -> Option<&str> {
-        self.outcome.as_ref().err()?.skipped.as_deref()
+        self.outcome.as_ref().err()?.skipped()
     }
 
     /// Failed, rather than passed or skipped.
     pub fn failed(&self) -> bool {
-        matches!(&self.outcome, Err(f) if f.skipped.is_none())
+        matches!(&self.outcome, Err(f) if f.skipped().is_none())
     }
 
     /// A test that couldn't run at all, e.g. because its modifiers failed.
@@ -438,7 +438,7 @@ pub fn run_around(
             Hook::Retries(n) => {
                 let mut outcome = run_around(shared, engine, run, idx, k + 1);
                 for attempt in 1..=*n {
-                    let skipped = matches!(&outcome, Err(f) if f.skipped.is_some());
+                    let skipped = matches!(&outcome, Err(f) if f.skipped().is_some());
                     if outcome.is_ok() || skipped || shared.flags.interrupted() {
                         break;
                     }
@@ -499,12 +499,9 @@ pub fn run_around(
 
 /// `result.skipped` for hooks: the reason, or `()`.
 fn skipped_of(outcome: &Outcome) -> Dynamic {
-    match outcome {
-        Err(Failure {
-            skipped: Some(reason),
-            ..
-        }) => reason.clone().into(),
-        _ => Dynamic::UNIT,
+    match outcome.as_ref().err().and_then(Failure::skipped) {
+        Some(reason) => reason.into(),
+        None => Dynamic::UNIT,
     }
 }
 
@@ -827,7 +824,7 @@ pub fn run_case(
     shared.flags.deadline.set(def.timeout.map(|t| started + t));
     let mut outcome = run_layers(shared, engine, &run, 0);
     if let (Err(f), Some(t)) = (&mut outcome, def.timeout)
-        && f.skipped.is_none()
+        && f.skipped().is_none()
         && started.elapsed() >= t
     {
         // Keep what a page wait was waiting for: "timed out while `click(…)` waited: …".
@@ -839,7 +836,7 @@ pub fn run_case(
     shared.flags.deadline.set(None);
     // Capture the page as the failure left it, before undo actions change anything.
     if let (Err(f), Some(session)) = (&mut outcome, frame.browser.borrow().as_ref())
-        && f.skipped.is_none()
+        && f.skipped().is_none()
     {
         let case = spec.label.clone().unwrap_or_else(|| {
             let args: Vec<String> = spec.args.iter().map(|(_, v)| display(v)).collect();

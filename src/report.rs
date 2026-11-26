@@ -94,7 +94,7 @@ pub fn render_failure(f: &Failure, sources: &Sources) -> String {
     if let Some(x) = &f.exchange {
         out.push_str(&render_exchange(x));
     }
-    if let Some(p) = &f.page {
+    if let Some(p) = f.page() {
         out.push_str(&render_page(p));
     }
     out
